@@ -25,10 +25,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <x86intrin.h>
 
 // TODO: make stubs for stb functions
 
@@ -87,6 +89,21 @@ typedef signed long   ssize;
 typedef unsigned int usize;
 typedef signed int   ssize;
 #endif
+
+// NOTE: profiler
+#ifndef ATLR_PROFILE_W_RES_UTIL
+#define ATLR_PROFILE_W_RES_UTIL 0
+#endif
+
+#if ATLR_PROFILE_W_RES_UTIL == 1
+// NOTE: this thing is extremely slow, so I'm adding a toggle while I figure out if I can fix it.
+#define ATLR_RUSAGE(...) getrusage(__VA_ARGS__)
+#else
+#define ATLR_RUSAGE(...) 0
+#endif
+
+#define ATLR_PROFILE_BLOCKS 4096
+#define ATLR_PROFILE_BLOCKS_CHILDREN 32
 
 // ===========================================================
 // @header: algebra
@@ -427,6 +444,65 @@ static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Recta
 // ===========================================================
 
 static f64 atlr_string_to_f64(char* str, u64 len);
+
+// ===========================================================
+// @header: profiler
+// ===========================================================
+
+typedef struct rusage OSUsage;
+
+typedef struct {
+    char *id;
+    u64 start_cpu_time;
+    u64 parent;
+    u64 time;
+    u64 bytes_processed;
+    u64 min_pfault;
+    u64 maj_pfault;
+    u64 hits;
+    u64 child_time;
+    u64 child_min_pfault;
+    u64 child_maj_pfault;
+    u64 children[ATLR_PROFILE_BLOCKS_CHILDREN];
+    u64 children_count;
+    OSUsage usage;
+} AtlrProfileBlock;
+
+typedef struct {
+    AtlrProfileBlock blocks[ATLR_PROFILE_BLOCKS];
+    u64 last_block;
+    char* filtered_id;
+    b32 is_within_filter;
+    u64 filtered_block;
+} AtlrProfile;
+
+typedef struct {
+    AtlrProfileBlock minimum;
+    AtlrProfileBlock maximum;
+    AtlrProfileBlock current;
+    u64 start_time;
+    u64 laps;
+} AtlrProfileRepetition;
+
+static AtlrProfile _atlr_profiling = {
+    .last_block = 0, 
+    .filtered_id = (char*) "", 
+    .is_within_filter = 0
+};
+static u64 _atlr_profile_current = 0;
+static u64 _atlr_cpu_frequency = 0;
+
+static u64  atlr_get_cpu_time();
+static u64  atlr_get_cpu_frequency();
+static void atlr_profile_init_block(AtlrProfileBlock*, char*, u64);
+static void atlr_profile_close_block(AtlrProfileBlock *block);
+static void atlr_profile_start_with_id(char*, u64);
+static void atlr_profile_end();
+static void atlr_profile_print_block(AtlrProfileBlock*, u64, u64);
+static void atlr_profile_print_block_at_pos(u64, u64, u64);
+
+// ===========================================================
+// ===========================================================
 
 #ifndef ATLR_HEADER_ONLY
 
@@ -1792,10 +1868,264 @@ static Matrix2x2 atlr_algebra_get_roll_m2x2(f64 degree) {
     };
 }
 
+// ===========================================================
+// @implementation: profiler
+// ===========================================================
+
+static u64 atlr_get_cpu_time() {
+    return __rdtsc();
+}
+
+static u64 atlr_get_cpu_frequency() {
+    if (_atlr_cpu_frequency) {
+        return _atlr_cpu_frequency;
+    }
+    u64 start = atlr_get_cpu_time();
+    u64 start_time = atlr_dt_get_time();
+    u64 end_time = atlr_dt_get_time();
+    while (end_time - start_time <= ATLR_SEC_TO_US) {
+        end_time = atlr_dt_get_time();
+    }
+    u64 end = atlr_get_cpu_time();
+    _atlr_cpu_frequency = end - start;
+    return _atlr_cpu_frequency;
+}
+
+#if !ATLR_PROFILE
+
+// NOTE: block
+static void atlr_profile_init_block(AtlrProfileBlock*, char*, u64) {}
+static void atlr_profile_close_block(AtlrProfileBlock *block) {}
+
+// NOTE: block tree
+static void atlr_profile_start_with_id(char*, u64) {
+    if (_atlr_profiling.last_block == 0) {
+        _atlr_profiling.blocks[0].id = (char*) "";
+        _atlr_profiling.blocks[0].start_cpu_time = atlr_get_cpu_time();
+        _atlr_profiling.last_block = 1; 
+    } 
+}
+static void atlr_profile_end() {}
+
+// NOTE: reporting
+static void atlr_profile_print_block(AtlrProfileBlock*, u64, u64) {}
+static void atlr_profile_print_block_at_pos(u64, u64, u64) {}
+
+#else
+
+static void atlr_profile_init_block(AtlrProfileBlock* block, char* id, u64 bytes_processed) {
+    if (ATLR_RUSAGE(0, &block->usage) == -1) {
+        // TODO: handle error
+    }
+    block->id = id;
+    block->start_cpu_time = atlr_get_cpu_time();
+    block->parent = 0;
+    block->time = 0;
+    block->min_pfault =
+    block->child_time = 0;
+    block->child_min_pfault = 0;
+    block->child_maj_pfault = 0;
+    block->hits = 1;
+    block->bytes_processed = bytes_processed;
+}
+
+static void atlr_profile_close_block(AtlrProfileBlock *block) {
+    block->time += atlr_get_cpu_time() - block->start_cpu_time;
+    OSUsage close_usage = {};
+    if (ATLR_RUSAGE(0, &close_usage) == -1) {
+        // TODO: handle error
+    }
+    block->min_pfault += close_usage.ru_minflt - block->usage.ru_minflt;
+    block->maj_pfault += close_usage.ru_majflt - block->usage.ru_majflt;
+}
+
+static void atlr_profile_filter(char* name) {
+    _atlr_profiling.filtered_id = name;
+}
+
+static void atlr_profile_start_with_id(char* id, u64 bytes_processed) {
+
+    if (_atlr_profiling.last_block + 1 > ATLR_PROFILE_BLOCKS) {
+        return;
+    }
+    if (_atlr_profiling.last_block == 0) {
+        _atlr_profiling.blocks[0].id = (char*) "";
+        _atlr_profiling.blocks[0].start_cpu_time = atlr_get_cpu_time();
+    } 
+
+    if (_atlr_profiling.last_block != 0 && strcmp(_atlr_profiling.blocks[_atlr_profile_current].id, id) == 0) {
+        // NOTE: if we open the same block within itself, skip
+        return;
+    }
+
+
+    AtlrProfileBlock *current = &_atlr_profiling.blocks[_atlr_profile_current];
+
+    for (u64 i = 0; i < current->children_count; i++) {
+        AtlrProfileBlock *curr = &_atlr_profiling.blocks[current->children[i]];
+        if (strcmp(curr->id, id) == 0) {
+            _atlr_profile_current = current->children[i];
+            if (ATLR_RUSAGE(0, &curr->usage) == -1) {
+                // TODO: handle error
+            }
+            curr->start_cpu_time = atlr_get_cpu_time();
+            curr->bytes_processed += bytes_processed;
+            curr->hits++;
+            return;
+        }
+    }
+
+    // NOTE: Filter block node
+    b32 has_filter = strcmp(_atlr_profiling.filtered_id, "") != 0;
+    b32 is_filtered_id = strcmp(_atlr_profiling.filtered_id, id) == 0;
+    if (has_filter && (!is_filtered_id && !_atlr_profiling.is_within_filter)) {
+        return;
+    } else if (is_filtered_id && !_atlr_profiling.is_within_filter) {
+        _atlr_profiling.is_within_filter = 1;
+        _atlr_profiling.filtered_block = _atlr_profiling.last_block + 1;
+    }
+
+    _atlr_profiling.last_block++;
+
+
+    // FIX: make sure we don't go over available space
+    current->children[current->children_count] = _atlr_profiling.last_block;
+    current->children_count++;
+
+    AtlrProfileBlock *new_block = &_atlr_profiling.blocks[_atlr_profiling.last_block];
+    atlr_profile_init_block(new_block, id, bytes_processed);
+    new_block->parent = _atlr_profile_current;
+    _atlr_profile_current = _atlr_profiling.last_block;
+}
+
+static void atlr_profile_end() {
+    AtlrProfileBlock *current = &_atlr_profiling.blocks[_atlr_profile_current];
+    b32 has_filter = strcmp(_atlr_profiling.filtered_id, "") != 0;
+    b32 is_filtered_id = strcmp(_atlr_profiling.filtered_id, current->id) == 0;
+    if (has_filter && (!is_filtered_id && !_atlr_profiling.is_within_filter)) {
+        return;
+    } else if (is_filtered_id && _atlr_profile_current == _atlr_profiling.filtered_block) {
+        _atlr_profiling.is_within_filter = 0;
+        _atlr_profiling.filtered_block = 0;
+    }
+    atlr_profile_close_block(current);
+    _atlr_profiling.blocks[current->parent].child_time = current->time;
+    _atlr_profiling.blocks[current->parent].child_min_pfault = current->min_pfault;
+    _atlr_profiling.blocks[current->parent].child_maj_pfault = current->maj_pfault;
+    _atlr_profile_current = current->parent;
+}
+
+static void atlr_profile_print_block(AtlrProfileBlock* block, u64 depth, u64 total_cpu_time) {
+    char* depth_hint = (char*) malloc(sizeof(char) * 2 * depth);
+    memset(depth_hint, 0, sizeof(char) * 2 * depth);
+    for (u64 i = 0; i < depth * 2; i++) {
+        depth_hint[i] = '-';
+    }
+    depth_hint[(sizeof(char) * 2 * depth) - 1] = '\0';
+    u64 current_time = block->time;
+    u64 total_child_time = block->child_time;
+    u64 total_child_min_pfault = block->child_min_pfault;
+    u64 total_child_maj_pfault = block->child_maj_pfault;
+    if (block != 0) {
+        if (total_child_time == 0) {
+            printf("%s %s (%ld):  (%.4lf %%) [%ld]",
+                depth_hint, 
+                block->id, 
+                block->hits, 
+                100.0f * current_time/total_cpu_time, 
+                current_time);
+        } else {
+            printf("%s %s (%ld):  (%.4lf %% | %.4lf %%) [%ld | %ld]",
+                depth_hint, 
+                block->id, 
+                block->hits, 
+                100.0f * (current_time - total_child_time)/total_cpu_time, 
+                100.0f * current_time/total_cpu_time, 
+                current_time - total_child_time, current_time);
+        }
+        if (block->min_pfault > 0 || total_child_min_pfault) {
+            printf(" | PF: min:%ld , maj:%ld",
+                block->min_pfault - total_child_min_pfault, 
+                block->maj_pfault - total_child_maj_pfault);
+        }
+
+        if (block->bytes_processed) {
+            f64 seconds = (f64) current_time / atlr_get_cpu_frequency();
+            f64 bps = block->bytes_processed / seconds;
+            f64 mb_processed = (f64) block->bytes_processed / ATLR_MEGABYTE;
+            f64 throughput = (f64) bps / ATLR_GIGABYTE;
+            printf(" | %.2f MB (%.3f GB/s) \n", mb_processed, throughput);
+        } else {
+            printf("\n");
+        }
+    }
+}
+
+static void atlr_profile_print_block_at_pos(u64 block, u64 depth, u64 total_cpu_time) {
+    AtlrProfileBlock curr = _atlr_profiling.blocks[block];
+    atlr_profile_print_block(&curr, depth, total_cpu_time);
+    for (u64 i = block + 1; i <= _atlr_profiling.last_block; i++) {
+        if (_atlr_profiling.blocks[i].parent == block) {
+            atlr_profile_print_block_at_pos(i, depth + 1, total_cpu_time);
+        }
+    }
+}
+
+#endif
+
+
+static void atlr_profile_print() {
+    _atlr_profiling.blocks[0].time = atlr_get_cpu_time() - _atlr_profiling.blocks[0].start_cpu_time;
+    _atlr_cpu_frequency = atlr_get_cpu_frequency();
+    u64 total_cpu_time = _atlr_profiling.blocks[0].time;
+    printf("--------------------------------------\n");
+    printf("Total Time: %.2lf ms (CPU Frequency %ld)\n", 1000.f * (f64)total_cpu_time/_atlr_cpu_frequency, _atlr_cpu_frequency);
+
+    if (_atlr_profiling.last_block == 0) {
+        return;
+    }
+
+    atlr_profile_print_block_at_pos(0, 1, total_cpu_time);
+}
+
+
+
+static AtlrProfileRepetition atlr_profile_repetition() {
+    AtlrProfileRepetition rep = {
+        .minimum = (AtlrProfileBlock) { .time = ATLR_MAX_U32 },
+        .maximum = (AtlrProfileBlock) { .time = 0 },
+        .current = (AtlrProfileBlock) {},
+        .start_time = atlr_dt_get_time(),
+        .laps = 0,
+    };
+    return rep;
+}
+
+static b32 atlr_profile_repetition_lap(AtlrProfileRepetition* repetition) {
+    atlr_profile_close_block(&repetition->current);
+    if (repetition->current.time < repetition->minimum.time) {
+        repetition->minimum = repetition->current;
+        repetition->start_time = atlr_dt_get_time();
+    }
+    if (repetition->current.time > repetition->maximum.time) {
+        repetition->maximum = repetition->current;
+    }
+
+
+    if (atlr_dt_get_time() - repetition->start_time > (ATLR_SEC_TO_US * 10)) {
+        printf("==== Minimum: ");
+        atlr_profile_print_block(&repetition->minimum, 1, repetition->minimum.time);
+        printf("==== Maximum: ");
+        atlr_profile_print_block(&repetition->maximum, 1, repetition->maximum.time);
+        return 0;
+    }
+    repetition->laps++;
+    return 1;
+}
 
 
 #endif
 
 #endif
 
-
+////////// END OF FILE
