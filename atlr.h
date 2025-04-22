@@ -6,11 +6,10 @@
  *
  * Atlr library: Personal library for personal tools :)
  *
- * Notes:
- * - WARNING: Might be dumb as f*ck, but I'm using the convention from python of
- *   naming private things starting with a `_`. Don't be dumb and use them
- *   directly... (°ー°; ) I'll also try to avoid been dumb, and try to have the 
- *   least instances of those "private" things
+ * WARNING: Might be dumb as f*ck, but I'm using the convention from python of
+ * naming private things starting with a `_`. Don't be dumb and use them
+ * directly... (°ー°; ) I'll also try to avoid been dumb, and try to have the 
+ * least instances of those "private" things
  */
 
 // ===========================================================
@@ -30,7 +29,6 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
-
 
 // TODO: make stubs for stb functions
 
@@ -57,6 +55,18 @@
 #define loop while (1) 
 #define atlr_isdigit(digit) ((digit - '0') >= 0 && (digit - '0') <= 9)
 
+// NOTE: log constants
+#define ATLR_LOG_H_SIZE 50
+#define ATLR_LOG_SIZE  500
+#ifdef ATLR_DEBUG
+#define ATLR_ENV "dev"
+#else
+#define ATLR_ENV "release"
+#endif
+
+// NOTE: file constants
+#define ATLR_DEFAULT_FILE_PERM 0644
+
 // NOTE: type shorthands
 typedef unsigned char  u8;
 typedef signed char    s8;
@@ -79,8 +89,44 @@ typedef signed int   ssize;
 #endif
 
 // ===========================================================
-// @module
-// @definition: atlr_str
+// @header: algebra
+// ===========================================================
+
+typedef struct {
+    union {
+        struct {
+            f64 x, y;
+        };
+        // NOTE: {0:independant, 1:dependant}
+        f64 values[2];
+    };
+} Vec2;
+
+typedef struct {
+    f64 values[4];
+} Matrix2x2;
+
+typedef struct {
+    Vec2* points;
+    u32 count;
+} Line;
+
+typedef struct {
+    Vec2 points[3];
+} Triangle;
+
+typedef struct {
+    s32 x, y;
+    s32 w, h;
+} Rectangle;
+
+static Matrix2x2 atlr_algebra_get_roll_m2x2(f64 degree);
+static Vec2      atlr_algebra_cross_m2x2_v2(Matrix2x2 m, Vec2 v);
+static Vec2      atlr_algebra_vec2_substract(Vec2 a, Vec2 b);
+static b32       atlr_algebra_vec2_equal(Vec2 a, Vec2 b);
+
+// ===========================================================
+// @header: string
 // ===========================================================
 
 typedef struct {
@@ -103,8 +149,7 @@ static void       atlr_str_concat_char(AtlrString *str, char data);
 static s64        atlr_str_find_char_last_pos(AtlrString *str, char c);
 
 // ===========================================================
-// @module
-// @definition: atlr_results
+// @header: results
 // ===========================================================
 
 typedef enum {
@@ -129,8 +174,7 @@ typedef struct {
 static char* atlr_get_error_message(AtlrResult r);
 
 // ===========================================================
-// @module
-// @definition: atlr_datetime
+// @header: datetime
 // ===========================================================
 
 typedef struct tm Time;
@@ -140,18 +184,8 @@ static u64 atlr_dt_get_time();
 static AtlrString atlr_dt_get_current_time_str();
 
 // ===========================================================
-// @module
-// @definition: atlr_logger
+// @header: logger
 // ===========================================================
-
-#define ATLR_LOG_H_SIZE 50
-#define ATLR_LOG_SIZE  500
-#ifdef ATLR_DEBUG
-#define ATLR_ENV "dev"
-#else
-#define ATLR_ENV "release"
-#endif
-
 
 static FILE *_ATLR_LOG_FILE = NULL;
 
@@ -178,8 +212,7 @@ static void  atlr_log_set_output(char*);
 #define atlr_log_error(...) atlr_log("ERROR",## __VA_ARGS__)
 
 // ===========================================================
-// @module
-// @definition: atlr_random
+// @header: random
 // ===========================================================
 
 static void _atlr_init_random();
@@ -190,7 +223,7 @@ static u64  atlr_random_u64(u64 upper_limit, u64 lower_limit);
 static u32  atlr_random_u32(u32 upper_limit, u32 lower_limit);
 
 // ===========================================================
-// @definition: atlr_mem
+// @header: memory arenas
 // ===========================================================
 
 typedef struct {
@@ -204,11 +237,201 @@ static u8*       atlr_mem_allocate(AtlrArena* arena, u64 size);
 static void      atlr_mem_clear(AtlrArena* arena, char* id);
 static void      atlr_mem_free(AtlrArena* arena, char* id);
 
-/* ========================================================================== */
 
 // ===========================================================
-// @module
-// @implementation: atlr_str
+// @header: atlr_fs
+// ===========================================================
+
+typedef struct stat AtlrStat;
+typedef struct dirent DirEnt;
+
+typedef struct {
+    AtlrString path;
+    AtlrString parent;
+    AtlrString filename;
+    AtlrString format;
+    u64 size;
+    b32 is_directory;
+    b32 is_loaded;
+    void *data;
+} AtlrFile;
+
+typedef struct {
+    AtlrString path;
+    AtlrFile *files;
+    u32 count;
+    u32 capacity;
+} AtlrDirectory;
+
+static AtlrFile      *atlr_fs_get_file(char *filepath);
+static AtlrResult     atlr_fs_create_file(char *filepath);
+static AtlrResult     atlr_fs_load_file(AtlrFile *file);
+static void           atlr_fs_unload_file(AtlrFile *file);
+static AtlrResult     atlr_fs_save_file(AtlrFile *src);
+static AtlrResult     atlr_fs_copy_file(AtlrFile *src, char *dest);
+static AtlrResult     atlr_fs_create_directory(char *pathname);
+static AtlrDirectory  atlr_fs_get_directory(char *pathname);
+static void           atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* tmp_dir);
+static void           atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir);
+
+// ===========================================================
+// @header: csv parser
+// ===========================================================
+
+typedef struct {
+    AtlrString key; 
+    AtlrString value; 
+} AtlrCsvColumn;
+
+typedef struct {
+   AtlrCsvColumn *cols;
+   u32 col_count;
+} AtlrCsvRow;
+
+typedef struct {
+   AtlrCsvRow *rows;
+   u32 row_count;
+} AtlrCsv;
+
+static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem);
+
+// ===========================================================
+// @header: json parser
+// ===========================================================
+
+// STUDY: is this renaming a good idea?
+typedef struct stat FileStat;
+
+typedef enum {
+    ATLR_JSON_VALUE_TYPE_UNKNOWN = 0,
+    ATLR_JSON_VALUE_TYPE_OBJECT = 1,
+    ATLR_JSON_VALUE_TYPE_ARRAY = 2,
+    ATLR_JSON_VALUE_TYPE_STRING = 3,
+    ATLR_JSON_VALUE_TYPE_NUMBER = 4,
+    ATLR_JSON_VALUE_TYPE_BOOLEAN = 5,
+    ATLR_JSON_VALUE_TYPE_NULL = 6,
+} AtlrJsonValueType;
+
+typedef struct {
+    void *data;
+    AtlrJsonValueType type;
+} AtlrJsonValue;
+
+typedef struct {
+    u64 len;
+    AtlrJsonValue *values;
+} AtlrJsonArray;
+
+typedef struct {
+    char *key;
+    AtlrJsonValue *value;
+} AtlrJsonKeyValuePair;
+
+typedef struct {
+    u64 len;
+    AtlrJsonKeyValuePair *pairs;
+} AtlrJsonObject;
+  
+// NOTE: tokens taken from json.org
+typedef enum {
+    ATLR_JSON_TOKEN_TYPE_UNKNOWN = 0, // no data
+    ATLR_JSON_TOKEN_TYPE_LEFT_BRACE = 1, // no data
+    ATLR_JSON_TOKEN_TYPE_LEFT_BRACKET = 2, // no data
+    ATLR_JSON_TOKEN_TYPE_RIGHT_BRACE = 3, // no data
+    ATLR_JSON_TOKEN_TYPE_RIGHT_BRACKET = 4, // no data
+    ATLR_JSON_TOKEN_TYPE_STRING = 5,
+    ATLR_JSON_TOKEN_TYPE_NUMBER = 6,
+    ATLR_JSON_TOKEN_TYPE_BOOLEAN_TRUE = 7,
+    ATLR_JSON_TOKEN_TYPE_BOOLEAN_FALSE = 8,
+    ATLR_JSON_TOKEN_TYPE_COLON = 9, // no data
+    ATLR_JSON_TOKEN_TYPE_COMMA = 10, // no data
+    ATLR_JSON_TOKEN_TYPE_NULL = 11, // no data
+} AtlrJsonTokenType;
+
+typedef struct {
+    void *data;
+    AtlrJsonTokenType type;
+} AtlrJsonToken;
+static u64             _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens);
+static AtlrJsonValue   _atlr_parse_value(AtlrJsonToken **tokens);
+static AtlrJsonArray*  _atlr_make_array(AtlrJsonToken *cursor);
+static AtlrJsonArray*  _atlr_parse_array(AtlrJsonToken **tokens);
+static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor);
+static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens);
+static char*           atlr_json_token_type_to_string(AtlrJsonTokenType type);
+static char*           atlr_json_value_type_to_string(AtlrJsonValueType type);
+static AtlrJsonValue   atlr_get_json_from_file(char*);
+static AtlrJsonValue*  atlr_get_value_by_key(AtlrJsonObject *object, char* key);
+
+// ===========================================================
+// @header: atlr_image
+// ===========================================================
+
+typedef struct {
+    u32* data;
+    s32 width;
+    s32 height;
+    s32 channels;
+} AtlrImage;
+
+static AtlrImage atlr_image_load(char*);
+static u32       atlr_image_get_color(AtlrImage, s32, s32);
+
+// ===========================================================
+// @header: atlr_font
+// ===========================================================
+
+typedef struct {
+    char codepoint;
+    s32 width;
+    s32 height;
+    s32 x_shift;
+    s32 y_shift;
+    u8* bitmap;
+} AtlrFontGlyph;
+
+typedef struct {
+    AtlrFontGlyph* glyphs;
+    u64 last;
+    u64 capacity;
+} AtlrFontAtlas;
+
+typedef struct {
+   stbtt_fontinfo font;
+   AtlrFile* font_file;
+   f32 scale;
+   f32 pixel_height;
+   AtlrFontAtlas atlas;
+} AtlrFont;
+
+static AtlrFont atlr_font_load(char* font_path, f32 font_scale, AtlrArena* arena);
+static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint);
+
+// ===========================================================
+// @header: atlr_rtzr
+// ===========================================================
+
+static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start);
+static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color);
+static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color);
+static void atlr_rtzr_order_triangle(Triangle *triangle);
+static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
+static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
+static void atlr_rtzr_make_rect_triangles(Rectangle rect, Triangle* triangles);
+static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation);
+static void atlr_rtzr_draw_triangle_texture(u32* data, s32 w, s32 h, Triangle, AtlrImage, u32, u32, b32, Matrix2x2);
+static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation);
+
+// ===========================================================
+// @header: math
+// ===========================================================
+
+static f64 atlr_string_to_f64(char* str, u64 len);
+
+#ifndef ATLR_HEADER_ONLY
+
+// ===========================================================
+// @implementation: string functions
 // ===========================================================
 
 static AtlrString atlr_str_create_empty_with_capacity(u32 capacity) {
@@ -326,8 +549,7 @@ static AtlrString atlr_str_left_pad(char *start_str, u16 width, char pad_char) {
 }
 
 // ===========================================================
-// @module
-// @implementation: atlr_datetime
+// @implementation: datetime functions
 // TODO: Consider moving to SDLs functions
 // ===========================================================
 
@@ -354,7 +576,6 @@ static AtlrString atlr_dt_get_current_time_str() {
 }
 
 // ===========================================================
-// @module
 // @implementation: atlr_logger
 // ===========================================================
 
@@ -362,7 +583,6 @@ static void _atlr_log_init() {
     if (_ATLR_LOG_FILE == NULL) {
         _ATLR_LOG_FILE = stdout;
     }
-
 }
 
 static void atlr_log_set_output(char* output) {
@@ -374,8 +594,7 @@ static void atlr_log_set_output(char* output) {
 }
 
 // ===========================================================
-// @module
-// @implementation: atlr_results
+// @implementation: results
 // ===========================================================
 
 static char* atlr_get_error_message(AtlrResult r) {
@@ -409,8 +628,7 @@ static char* atlr_get_error_message(AtlrResult r) {
 }
 
 // ===========================================================
-// @module
-// @implementation: atlr_random
+// @implementation: random
 // NOTE: functions are inclusive of the limits
 // ===========================================================
 
@@ -480,8 +698,7 @@ static f64 atlr_random_f64(f64 upper_limit, f64 lower_limit) {
 }
 
 // ===========================================================
-// @module
-// @implementation: atlr_mem
+// @implementation: memory arena functions
 // ===========================================================
 
 static AtlrArena atlr_mem_create_arena(u64 capacity) {
@@ -525,178 +742,6 @@ static void atlr_mem_free(AtlrArena* arena, char* id) {
 }
 
 // ===========================================================
-// @dependencies
-// STUDY: Is there any possibility to remove some of this?
-// ===========================================================
-
-
-// ===========================================================
-// @definition: symbols
-// ===========================================================
-
-#define ATLR_DEFAULT_FILE_PERM 0644
-
-// ===========================================================
-// @module
-// @definition: atlr_fs
-// ===========================================================
-
-typedef struct stat AtlrStat;
-typedef struct dirent DirEnt;
-
-typedef struct {
-    AtlrString path;
-    AtlrString parent;
-    AtlrString filename;
-    AtlrString format;
-    u64 size;
-    b32 is_directory;
-    b32 is_loaded;
-    void *data;
-} AtlrFile;
-
-typedef struct {
-    AtlrString path;
-    AtlrFile *files;
-    u32 count;
-    u32 capacity;
-} AtlrDirectory;
-
-static AtlrFile      *atlr_fs_get_file(char *filepath);
-static AtlrResult     atlr_fs_create_file(char *filepath);
-static AtlrResult     atlr_fs_load_file(AtlrFile *file);
-static void           atlr_fs_unload_file(AtlrFile *file);
-static AtlrResult     atlr_fs_save_file(AtlrFile *src);
-static AtlrResult     atlr_fs_copy_file(AtlrFile *src, char *dest);
-static AtlrResult     atlr_fs_create_directory(char *pathname);
-static AtlrDirectory  atlr_fs_get_directory(char *pathname);
-static void           atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* tmp_dir);
-static void           atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir);
-
-// ===========================================================
-// @module
-// @definition: atlr_csv
-// ===========================================================
-
-typedef struct {
-    AtlrString key; 
-    AtlrString value; 
-} AtlrCsvColumn;
-
-typedef struct {
-   AtlrCsvColumn *cols;
-   u32 col_count;
-} AtlrCsvRow;
-
-typedef struct {
-   AtlrCsvRow *rows;
-   u32 row_count;
-} AtlrCsv;
-
-static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem);
-
-// ===========================================================
-// @module
-// @definition: atlr_json
-// ===========================================================
-
-typedef struct stat FileStat;
-
-typedef enum {
-    ATLR_JSON_VALUE_TYPE_UNKNOWN = 0,
-    ATLR_JSON_VALUE_TYPE_OBJECT = 1,
-    ATLR_JSON_VALUE_TYPE_ARRAY = 2,
-    ATLR_JSON_VALUE_TYPE_STRING = 3,
-    ATLR_JSON_VALUE_TYPE_NUMBER = 4,
-    ATLR_JSON_VALUE_TYPE_BOOLEAN = 5,
-    ATLR_JSON_VALUE_TYPE_NULL = 6,
-} AtlrJsonValueType;
-
-typedef struct {
-    void *data;
-    AtlrJsonValueType type;
-} AtlrJsonValue;
-
-typedef struct {
-    u64 len;
-    AtlrJsonValue *values;
-} AtlrJsonArray;
-
-typedef struct {
-    char *key;
-    AtlrJsonValue *value;
-} AtlrJsonKeyValuePair;
-
-typedef struct {
-    u64 len;
-    AtlrJsonKeyValuePair *pairs;
-} AtlrJsonObject;
-  
-// NOTE(torija): tokens taken from json.org
-typedef enum {
-    ATLR_JSON_TOKEN_TYPE_UNKNOWN = 0, // no data
-    ATLR_JSON_TOKEN_TYPE_LEFT_BRACE = 1, // no data
-    ATLR_JSON_TOKEN_TYPE_LEFT_BRACKET = 2, // no data
-    ATLR_JSON_TOKEN_TYPE_RIGHT_BRACE = 3, // no data
-    ATLR_JSON_TOKEN_TYPE_RIGHT_BRACKET = 4, // no data
-    ATLR_JSON_TOKEN_TYPE_STRING = 5,
-    ATLR_JSON_TOKEN_TYPE_NUMBER = 6,
-    ATLR_JSON_TOKEN_TYPE_BOOLEAN_TRUE = 7,
-    ATLR_JSON_TOKEN_TYPE_BOOLEAN_FALSE = 8,
-    ATLR_JSON_TOKEN_TYPE_COLON = 9, // no data
-    ATLR_JSON_TOKEN_TYPE_COMMA = 10, // no data
-    ATLR_JSON_TOKEN_TYPE_NULL = 11, // no data
-} AtlrJsonTokenType;
-
-typedef struct {
-    void *data;
-    AtlrJsonTokenType type;
-} AtlrJsonToken;
-
-static char* atlr_json_token_type_to_string(AtlrJsonTokenType type) {
-    switch (type) {
-        case ATLR_JSON_TOKEN_TYPE_UNKNOWN: return (char *) "Unknown";
-        case ATLR_JSON_TOKEN_TYPE_LEFT_BRACE: return (char *) "Left Brace";
-        case ATLR_JSON_TOKEN_TYPE_LEFT_BRACKET: return (char *) "Left Bracket";
-        case ATLR_JSON_TOKEN_TYPE_RIGHT_BRACE: return (char *) "Right Brace";
-        case ATLR_JSON_TOKEN_TYPE_RIGHT_BRACKET: return (char *) "Right Bracket";
-        case ATLR_JSON_TOKEN_TYPE_STRING: return (char *) "String";
-        case ATLR_JSON_TOKEN_TYPE_NUMBER: return (char *) "Number";
-        case ATLR_JSON_TOKEN_TYPE_BOOLEAN_TRUE: return (char *) "True";
-        case ATLR_JSON_TOKEN_TYPE_BOOLEAN_FALSE: return (char *) "False";
-        case ATLR_JSON_TOKEN_TYPE_COLON: return (char *) "Colon";
-        case ATLR_JSON_TOKEN_TYPE_COMMA: return (char *) "Comma";
-        case ATLR_JSON_TOKEN_TYPE_NULL: return (char *) "Null";
-    }
-    return (char *) "Undefined";
-}
-
-static char* atlr_json_value_type_to_string(AtlrJsonValueType type) {
-    switch (type) {
-        case ATLR_JSON_VALUE_TYPE_UNKNOWN: return (char*) "Unknown";
-        case ATLR_JSON_VALUE_TYPE_OBJECT: return (char*) "Object";
-        case ATLR_JSON_VALUE_TYPE_ARRAY: return (char*) "Array";
-        case ATLR_JSON_VALUE_TYPE_STRING: return (char*) "String";
-        case ATLR_JSON_VALUE_TYPE_NUMBER: return (char*) "Number";
-        case ATLR_JSON_VALUE_TYPE_BOOLEAN: return (char*) "Boolean";
-        case ATLR_JSON_VALUE_TYPE_NULL: return (char*) "Null";
-    }
-    return (char *) "Undefined";
-}
-
-static u64             _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens);
-static AtlrJsonValue   _atlr_parse_value(AtlrJsonToken **tokens);
-static AtlrJsonArray*  _atlr_make_array(AtlrJsonToken *cursor);
-static AtlrJsonArray*  _atlr_parse_array(AtlrJsonToken **tokens);
-static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor);
-static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens);
-static AtlrJsonValue   atlr_get_json_from_file(char*);
-static AtlrJsonValue*  atlr_get_value_by_key(AtlrJsonObject *object, char* key);
-
-/* ========================================================================== */
-
-// ===========================================================
-// @module
 // @implementation: atlr_fs
 // ===========================================================
 
@@ -891,7 +936,6 @@ static void atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir) {
 }
 
 // ===========================================================
-// @module
 // @implementation: atlr_csv
 // ===========================================================
 
@@ -971,7 +1015,6 @@ static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
 }
 
 // ===========================================================
-// @module
 // @implementation: atlr_json
 // ===========================================================
 
@@ -1264,6 +1307,38 @@ static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens) {
     return object;
 }
 
+static char* atlr_json_token_type_to_string(AtlrJsonTokenType type) {
+    switch (type) {
+        case ATLR_JSON_TOKEN_TYPE_UNKNOWN: return (char *) "Unknown";
+        case ATLR_JSON_TOKEN_TYPE_LEFT_BRACE: return (char *) "Left Brace";
+        case ATLR_JSON_TOKEN_TYPE_LEFT_BRACKET: return (char *) "Left Bracket";
+        case ATLR_JSON_TOKEN_TYPE_RIGHT_BRACE: return (char *) "Right Brace";
+        case ATLR_JSON_TOKEN_TYPE_RIGHT_BRACKET: return (char *) "Right Bracket";
+        case ATLR_JSON_TOKEN_TYPE_STRING: return (char *) "String";
+        case ATLR_JSON_TOKEN_TYPE_NUMBER: return (char *) "Number";
+        case ATLR_JSON_TOKEN_TYPE_BOOLEAN_TRUE: return (char *) "True";
+        case ATLR_JSON_TOKEN_TYPE_BOOLEAN_FALSE: return (char *) "False";
+        case ATLR_JSON_TOKEN_TYPE_COLON: return (char *) "Colon";
+        case ATLR_JSON_TOKEN_TYPE_COMMA: return (char *) "Comma";
+        case ATLR_JSON_TOKEN_TYPE_NULL: return (char *) "Null";
+    }
+    return (char *) "Undefined";
+}
+
+static char* atlr_json_value_type_to_string(AtlrJsonValueType type) {
+    switch (type) {
+        case ATLR_JSON_VALUE_TYPE_UNKNOWN: return (char*) "Unknown";
+        case ATLR_JSON_VALUE_TYPE_OBJECT: return (char*) "Object";
+        case ATLR_JSON_VALUE_TYPE_ARRAY: return (char*) "Array";
+        case ATLR_JSON_VALUE_TYPE_STRING: return (char*) "String";
+        case ATLR_JSON_VALUE_TYPE_NUMBER: return (char*) "Number";
+        case ATLR_JSON_VALUE_TYPE_BOOLEAN: return (char*) "Boolean";
+        case ATLR_JSON_VALUE_TYPE_NULL: return (char*) "Null";
+    }
+    return (char *) "Undefined";
+}
+
+
 static AtlrJsonValue atlr_get_json_from_file(char* file_location) {
     atlr_profile_filter((char*) "tokens");
 
@@ -1327,76 +1402,7 @@ static AtlrJsonValue* atlr_get_value_by_key(AtlrJsonObject *object, char* key) {
     return NULL;
 }
 
-
-
 // ===========================================================
-// @module
-// @definition: atlr_image
-// ===========================================================
-
-typedef struct {
-    u32* data;
-    s32 width;
-    s32 height;
-    s32 channels;
-} AtlrImage;
-
-static AtlrImage atlr_image_load(char*);
-static u32       atlr_image_get_color(AtlrImage, s32, s32);
-
-// ===========================================================
-// @module
-// @definition: atlr_font
-// ===========================================================
-
-#define ATLR_DEFAULT_FONT "/home/torija/develop/atelier/atlr/static/fonts/pixelated.ttf"
-
-typedef struct {
-    char codepoint;
-    s32 width;
-    s32 height;
-    s32 x_shift;
-    s32 y_shift;
-    u8* bitmap;
-} AtlrFontGlyph;
-
-typedef struct {
-    AtlrFontGlyph* glyphs;
-    u64 last;
-    u64 capacity;
-} AtlrFontAtlas;
-
-typedef struct {
-   stbtt_fontinfo font;
-   AtlrFile* font_file;
-   f32 scale;
-   f32 pixel_height;
-   AtlrFontAtlas atlas;
-} AtlrFont;
-
-static AtlrFont atlr_font_load(char* font_path, f32 font_scale, AtlrArena* arena);
-static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint);
-
-// ===========================================================
-// @definition: atlr_rtzr
-// ===========================================================
-
-static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start);
-static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color);
-static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color);
-static void atlr_rtzr_order_triangle(Triangle *triangle);
-static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
-static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
-static void atlr_rtzr_make_rect_triangles(Rectangle rect, Triangle* triangles);
-static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation);
-static void atlr_rtzr_draw_triangle_texture(u32* data, s32 w, s32 h, Triangle, AtlrImage, u32, u32, b32, Matrix2x2);
-static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation);
-
-
-/* ========================================================================== */
-
-// ===========================================================
-// @module
 // @implementation: atlr_image
 // ===========================================================
 
@@ -1425,7 +1431,6 @@ static u32 atlr_image_get_color(AtlrImage img, s32 x, s32 y) {
 }
 
 // ===========================================================
-// @module
 // @implementation: atlr_font
 // ===========================================================
 
@@ -1471,10 +1476,8 @@ static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint) {
 }
 
 // ===========================================================
-// @module
 // @implementation: atlr_rtzr
 // ===========================================================
-
 
 static void atlr_rtzr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 color, Vec2 origin, AtlrFont* font) {
     u32 x_pos = origin.x;
@@ -1497,10 +1500,6 @@ static void atlr_rtzr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 c
         x_pos += glyph.width + fixed_kern;
     }
 }
-
-// ===========================================================
-// @implementation: atlr_rtzr
-// ===========================================================
 
 static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start) {
     Line line = (Line) {};
@@ -1724,54 +1723,7 @@ static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Recta
     atlr_rtzr_draw_triangle_texture(data, w, h, t[1], image, dest.w, dest.h, 1, rotation);
 }
 
-
 // ===========================================================
-// @module
-// @definition: atlr_math
-// ===========================================================
-
-static f64 atlr_string_to_f64(char* str, u64 len);
-
-// ===========================================================
-// @module
-// @definition: atlr_algebra
-// ===========================================================
-
-typedef struct {
-    union {
-        struct {
-            f64 x, y;
-        };
-        // NOTE: {0:independant, 1:dependant}
-        f64 values[2];
-    };
-} Vec2;
-
-typedef struct {
-    f64 values[4];
-} Matrix2x2;
-
-typedef struct {
-    Vec2* points;
-    u32 count;
-} Line;
-
-typedef struct {
-    Vec2 points[3];
-} Triangle;
-
-typedef struct {
-    s32 x, y;
-    s32 w, h;
-} Rectangle;
-
-static Matrix2x2 atlr_algebra_get_roll_m2x2(f64 degree);
-static Vec2      atlr_algebra_cross_m2x2_v2(Matrix2x2 m, Vec2 v);
-static Vec2      atlr_algebra_vec2_substract(Vec2 a, Vec2 b);
-static b32       atlr_algebra_vec2_equal(Vec2 a, Vec2 b);
-
-// ===========================================================
-// @module
 // @implementation: atlr_math
 // ===========================================================
 
@@ -1808,8 +1760,7 @@ static f64 atlr_string_to_f64(char* str, u64 len) {
 }
 
 // ===========================================================
-// @module
-// @implementation: atlr_algebra
+// @implementation: algebra
 // ===========================================================
 
 static b32 atlr_algebra_vec2_equal(Vec2 a, Vec2 b) {
@@ -1841,4 +1792,10 @@ static Matrix2x2 atlr_algebra_get_roll_m2x2(f64 degree) {
     };
 }
 
+
+
 #endif
+
+#endif
+
+
