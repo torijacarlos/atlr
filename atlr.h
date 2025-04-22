@@ -32,16 +32,7 @@
 #include <unistd.h>
 
 
-#ifndef STB_TRUETYPE_IMPLEMENTATION
-#define STB_TRUETYPE_IMPLEMENTATION
-#include "../vendor/stb_truetype.h"
-#endif
-
-#ifndef STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#include "../vendor/stb_image.h"
-#endif
-
+// TODO: make stubs for stb functions
 
 // ===========================================================
 // @definition: symbols
