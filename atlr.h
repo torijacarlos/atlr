@@ -232,6 +232,7 @@ typedef enum {
     ATLR_ERROR_UNKNOWN,
     // atlr_fs errors
     ATLR_ERROR_FS_NOT_INITIALIZED,
+    ATLR_ERROR_FS_NOT_LOADED,
     ATLR_ERROR_FS_PATH_DOES_NOT_EXIST,
     ATLR_ERROR_FS_FAILED_CREATING_DIR,
     ATLR_ERROR_FS_TRIED_LOADING_DIR,
@@ -323,12 +324,12 @@ static AtlrResult    atlr_fs_create_file(char *filepath);
 static AtlrResult    atlr_fs_load_file(AtlrFile *file, AtlrArena* memory);
 static void          atlr_fs_unload_file(AtlrFile *file);
 static AtlrResult    atlr_fs_save_file(AtlrFile *src);
-static AtlrResult    atlr_fs_copy_file(AtlrFile *src, char *dest, AtlrArena* memory);
+static AtlrResult    atlr_fs_copy_file(AtlrFile *src, char *dest);
 static AtlrResult    atlr_fs_create_directory(char *pathname);
 static AtlrDirectory atlr_fs_get_directory(char *pathname, u64 pathlen, AtlrArena* memory);
 static void          atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir, AtlrArena* memory);
 static void          atlr_fs_build_file(AtlrFile *file, AtlrArena* memory);
-static void          atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir, AtlrArena* memory);
+static void          atlr_remove_dir_files(AtlrDirectory dir_name, b32 remove_dir);
 
 // ===========================================================
 // @header: csv parser
@@ -639,6 +640,7 @@ static void atlr_str_concat_char(AtlrString *str, char data, AtlrArena* memory) 
 }
 
 static void atlr_str_clear(AtlrString *string) {
+    memset(string->data, 0, string->capacity);
     string->len = 0;
 }
 
@@ -936,6 +938,7 @@ static AtlrResult atlr_fs_load_file(AtlrFile *file, AtlrArena* memory) {
         };
     }
 
+    atlr_log_debug("loading: %s (%ld)", file->path.data, file->size);
     if (!file->is_loaded) {
         s64 fd = open(file->path.data, O_RDONLY | O_CREAT, ATLR_DEFAULT_FILE_PERM);
         if (fd <= 0) {
@@ -970,10 +973,12 @@ static AtlrResult atlr_fs_save_file(AtlrFile *src) {
     return (AtlrResult) { .is_success = 1, };
 }
 
-static AtlrResult atlr_fs_copy_file(AtlrFile *src, char *dest, AtlrArena* memory) {
-    AtlrResult load_res = atlr_fs_load_file(src, memory);
-    if (!load_res.is_success) {
-        return load_res;
+static AtlrResult atlr_fs_copy_file(AtlrFile *src, char *dest) {
+    if (!src->is_loaded) {
+        return (AtlrResult) { 
+            .is_success = 0,
+            .error = ATLR_ERROR_FS_NOT_LOADED
+        };
     }
 
     u64 fd = creat(dest, 0644);
@@ -985,7 +990,6 @@ static AtlrResult atlr_fs_copy_file(AtlrFile *src, char *dest, AtlrArena* memory
     }
     write(fd, src->data, src->size);
     close(fd);
-    atlr_fs_unload_file(src);
     return (AtlrResult) { .is_success = 1, };
 }
 
@@ -1003,16 +1007,18 @@ static AtlrResult atlr_fs_create_directory(char *pathname) {
 }
 
 static AtlrDirectory atlr_fs_get_directory(char *pathname, u64 pathlen, AtlrArena* memory) {
-    AtlrDirectory atlr_dir = {
-        .capacity = 0,
-    };
     AtlrString dir_path = atlr_str_create_from(pathname, pathlen, memory);
     if (dir_path.data[dir_path.len - 1] != '/') {
         atlr_str_concat_char(&dir_path, '/', memory);
     }
+    AtlrDirectory atlr_dir = {
+        .capacity = 0,
+        .path = dir_path,
+        .count = 0,
+    };
+    DIR *directory;
 
-    DIR *directory = opendir(atlr_dir.path.data);
-    DIR *base_directory = directory;
+    directory = opendir(atlr_dir.path.data);
     while (directory) {
         DirEnt *entry = readdir(directory);
         if (!entry) {
@@ -1022,12 +1028,11 @@ static AtlrDirectory atlr_fs_get_directory(char *pathname, u64 pathlen, AtlrAren
             atlr_dir.capacity++;
         }
     }
+    closedir(directory);
 
     atlr_dir.files = (AtlrFile *) atlr_mem_allocate(memory, sizeof(AtlrFile) * atlr_dir.capacity);
-    atlr_dir.path = dir_path;
-    atlr_dir.count = 0;
 
-    directory = base_directory;
+    directory = opendir(atlr_dir.path.data);
     while (directory) {
         DirEnt *entry = readdir(directory);
         // NOTE(torija): `entry->d_type == 4` if its a directory
@@ -1059,26 +1064,35 @@ static AtlrDirectory atlr_fs_get_directory(char *pathname, u64 pathlen, AtlrAren
 static void atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir, AtlrArena* memory) {
     AtlrResult result = atlr_fs_create_directory(dest_dir->data);
     if (!result.is_success) {
-        atlr_log_error("atlr_fs_copy_dir: Could not create dest directory");
+        atlr_log_error("Could not create dest directory");
+        return;
     }
-    AtlrString dest_file_name = atlr_str_create_empty_with_capacity(60, memory);
+    AtlrArena string_mem = atlr_mem_slice(memory, ATLR_KILOBYTE);
+    AtlrArena file_mem = atlr_mem_slice(memory, memory->capacity - string_mem.capacity);
+    AtlrString dest_file_name = atlr_str_create_empty_with_capacity(60, &string_mem);
     for (u32 i = 0; i < directory->count; i++) {
         AtlrFile file = directory->files[i];
         atlr_str_clear(&dest_file_name);
-        atlr_str_concat_atlr_string(&dest_file_name, dest_dir, memory);
-        atlr_str_concat_atlr_string(&dest_file_name, &file.filename, memory);
-        atlr_fs_copy_file(&file, dest_file_name.data, memory);
+        atlr_str_concat_atlr_string(&dest_file_name, dest_dir, &string_mem);
+        atlr_str_concat_atlr_string(&dest_file_name, &file.filename, &string_mem);
+
+        atlr_mem_clear(&file_mem, (char*) __func__);
+        AtlrResult load_res = atlr_fs_load_file(&file, &file_mem);
+        if (!load_res.is_success) {
+            atlr_log_error("%s", atlr_get_error_message(load_res));
+            continue;
+        }
+        atlr_fs_copy_file(&file, dest_file_name.data);
     }
 }
 
-static void atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir, AtlrArena* memory) {
-    AtlrDirectory dir = atlr_fs_get_directory(dir_name->data, dir_name->len, memory);
+static void atlr_remove_dir_files(AtlrDirectory dir, b32 remove_dir) {
     for (u16 i = 0; i < dir.count; i++) {
         AtlrFile file = dir.files[i];
         remove(file.path.data);
     }
     if (remove_dir) {
-        remove(dir_name->data);
+        remove(dir.path.data);
     }
 }
 
@@ -1494,7 +1508,7 @@ static AtlrJsonValue atlr_get_json_from_file(char* file_location, u64 file_locle
     atlr_fs_load_file(json_file, memory);
     atlr_profile_end();
     if (!json_file->is_loaded) {
-        atlr_log_error("Could not read json file\n");
+        atlr_log_error("Could not read json file");
         // TODO(torija): handle error
         return (AtlrJsonValue){};
     }
