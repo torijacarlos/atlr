@@ -63,11 +63,6 @@ static float stbtt_ScaleForPixelHeight(const stbtt_fontinfo *, float);
 static unsigned char *stbtt_GetCodepointBitmap(const stbtt_fontinfo *, float, float, int, int *, int *, int *, int *);
 #endif
 
-#ifndef STB_IMAGE_IMPLEMENTATION
-typedef unsigned char stbi_uc;
-static stbi_uc *stbi_load(char const*, int*, int*, int*, int);
-#endif
-
 // ===========================================================
 // @definition: symbols
 // ===========================================================
@@ -432,7 +427,7 @@ typedef struct {
     s32 channels;
 } AtlrImage;
 
-static AtlrImage atlr_image_load(char*);
+static AtlrImage atlr_image_make(void* data, s32 w, s32 h, s32 n);
 static u32       atlr_image_get_color(AtlrImage, s32, s32);
 
 // ===========================================================
@@ -1540,15 +1535,12 @@ static AtlrJsonValue* atlr_get_value_by_key(AtlrJsonObject *object, char* key) {
 // @implementation: atlr_image
 // ===========================================================
 
-static AtlrImage atlr_image_load(char* location) {
-    s32 w, h, n;
-    unsigned char *img_data = stbi_load(location, &w, &h, &n, 4);
-    
+static AtlrImage atlr_image_make(void* data, s32 w, s32 h, s32 n) {
     return (AtlrImage) {
-        .data = (u32*) img_data,
+        .data = (u32*) data,
         .width = w,
         .height = h,
-        .channels = 4,
+        .channels = n,
     };
 }
 
