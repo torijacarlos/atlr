@@ -879,7 +879,7 @@ static AtlrArena atlr_mem_slice(AtlrArena* arena, u64 size) {
 }
 
 static void atlr_mem_clear(AtlrArena* arena, char* id) {
-    atlr_log_info("freeing mem arena (%s): used: %0.5f %%", id, ((f64) arena->used / arena->capacity) * 100.0);
+    atlr_log_debug("freeing mem arena (%s): used: %0.5f %%", id, ((f64) arena->used / arena->capacity) * 100.0);
     arena->used = 0;
 }
 
@@ -895,7 +895,7 @@ static void atlr_fs_build_file(AtlrFile *file, AtlrArena* memory) {
     file->size = 0;
     file->is_directory = 0;
     file->is_loaded = 0;
-    // WARNING(torija): platform dependant
+    // WARNING: platform dependant
     s64 dir_pos = atlr_str_find_char_last_pos(&file->path, '/');
     s64 format_pos = atlr_str_find_char_last_pos(&file->path, '.');
     file->parent = atlr_str_get_left_side_from_pos(&file->path, dir_pos + 1);;
