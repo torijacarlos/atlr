@@ -79,6 +79,8 @@ static stbi_uc *stbi_load(char const*, int*, int*, int*, int);
 #define ATLR_MEGABYTE (ATLR_KILOBYTE * 1024)
 #define ATLR_GIGABYTE (ATLR_MEGABYTE * 1024)
 
+#define ATLR_MEMORY_CAPACITY (5 * ATLR_KILOBYTE)
+
 #define ATLR_MAX_U64 18446744073709551615 - 1
 #define ATLR_MAX_U32 4294967295 - 1
 
@@ -140,6 +142,28 @@ typedef signed int   ssize;
 #define ATLR_PROFILE_BLOCKS_CHILDREN 32
 
 // ===========================================================
+// @header: memory arenas
+// ===========================================================
+
+typedef struct {
+    void* data;
+    u64 capacity;
+    u64 used;
+} AtlrArena;
+
+static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity);
+static u8*       atlr_mem_allocate(AtlrArena* arena, u64 size);
+static AtlrArena atlr_mem_slice(AtlrArena* arena, u64 size);
+static void      atlr_mem_clear(AtlrArena* arena, char* id);
+static void      atlr_mem_free(AtlrArena* arena, char* id);
+
+// ===========================================================
+// @header: init
+// ===========================================================
+
+static void atlr_init(AtlrArena* memory);
+
+// ===========================================================
 // @header: algebra
 // ===========================================================
 
@@ -186,17 +210,17 @@ typedef struct {
     char *data;
 } AtlrString;
 
-static AtlrString atlr_str_create_empty_with_capacity(u32 capacity);
-static AtlrString atlr_str_create_empty();
-static AtlrString atlr_str_create_from(char *str);
+static AtlrString atlr_str_create_empty_with_capacity(u32 capacity, AtlrArena* memory);
+static AtlrString atlr_str_create_empty(AtlrArena* memory);
+static AtlrString atlr_str_create_from(char *str, u64 len, AtlrArena* memory);
 static AtlrString atlr_str_get_left_side_from_pos(AtlrString *str, u64 split_pos);
 static AtlrString atlr_str_get_right_side_from_pos(AtlrString *str, u64 split_pos);
 static void       atlr_str_clear(AtlrString *string);
 static void       atlr_str_to_lower(AtlrString *str);
-static void       atlr_str_increase_capacity(AtlrString *str);
-static void       atlr_str_concat_atlr_string(AtlrString *dest, AtlrString *src);
-static void       atlr_str_concat_string(AtlrString *str, char *data, u32 len);
-static void       atlr_str_concat_char(AtlrString *str, char data);
+static void       atlr_str_increase_capacity(AtlrString *str, u64 new_capacity, AtlrArena* memory);
+static void       atlr_str_concat_atlr_string(AtlrString *dest, AtlrString *src, AtlrArena* memory);
+static void       atlr_str_concat_string(AtlrString *str, char *data, u32 len, AtlrArena* memory);
+static void       atlr_str_concat_char(AtlrString *str, char data, AtlrArena* memory);
 static s64        atlr_str_find_char_last_pos(AtlrString *str, char c);
 
 // ===========================================================
@@ -232,25 +256,21 @@ typedef struct tm Time;
 typedef struct timeval TimeVal;
 
 static u64 atlr_dt_get_time();
-static AtlrString atlr_dt_get_current_time_str();
+static AtlrString atlr_dt_get_current_time_str(AtlrArena* memory);
 
 // ===========================================================
 // @header: logger
 // ===========================================================
 
-static FILE *_ATLR_LOG_FILE = NULL;
-
-static void  _atlr_log_init();
 static void  atlr_log_set_output(char*);
 
 #define atlr_log(lvl, ...) {                      \
-    _atlr_log_init();                             \
-    fprintf(_ATLR_LOG_FILE, "[%s]:[%s]:[%s:%d]:", \
-        atlr_dt_get_current_time_str().data, lvl, \
+    fprintf(ATLR_LOG_FILE, "[%s]:[%s]:[%s:%d]:", \
+        atlr_dt_get_current_time_str(&ATLR_LOG_MEMORY).data, lvl, \
         __FILE__, __LINE__);                      \
-    fprintf(_ATLR_LOG_FILE, "[%s]:", ATLR_ENV);   \
-    fprintf(_ATLR_LOG_FILE,## __VA_ARGS__);       \
-    fprintf(_ATLR_LOG_FILE, "\n");                \
+    fprintf(ATLR_LOG_FILE, "[%s]:", ATLR_ENV);   \
+    fprintf(ATLR_LOG_FILE,## __VA_ARGS__);       \
+    fprintf(ATLR_LOG_FILE, "\n");                \
 }
 
 #ifdef ATLR_DEBUG
@@ -274,23 +294,7 @@ static u64  atlr_random_u64(u64 upper_limit, u64 lower_limit);
 static u32  atlr_random_u32(u32 upper_limit, u32 lower_limit);
 
 // ===========================================================
-// @header: memory arenas
-// ===========================================================
-
-typedef struct {
-    void* data;
-    u64 capacity;
-    u64 used;
-} AtlrArena;
-
-static AtlrArena atlr_mem_create_arena(u64 capacity);
-static u8*       atlr_mem_allocate(AtlrArena* arena, u64 size);
-static void      atlr_mem_clear(AtlrArena* arena, char* id);
-static void      atlr_mem_free(AtlrArena* arena, char* id);
-
-
-// ===========================================================
-// @header: atlr_fs
+// @header: files
 // ===========================================================
 
 typedef struct stat AtlrStat;
@@ -314,16 +318,17 @@ typedef struct {
     u32 capacity;
 } AtlrDirectory;
 
-static AtlrFile      *atlr_fs_get_file(char *filepath);
-static AtlrResult     atlr_fs_create_file(char *filepath);
-static AtlrResult     atlr_fs_load_file(AtlrFile *file);
-static void           atlr_fs_unload_file(AtlrFile *file);
-static AtlrResult     atlr_fs_save_file(AtlrFile *src);
-static AtlrResult     atlr_fs_copy_file(AtlrFile *src, char *dest);
-static AtlrResult     atlr_fs_create_directory(char *pathname);
-static AtlrDirectory  atlr_fs_get_directory(char *pathname);
-static void           atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* tmp_dir);
-static void           atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir);
+static AtlrFile*     atlr_fs_get_file(char *filepath, u64 pathlen, AtlrArena* memory);
+static AtlrResult    atlr_fs_create_file(char *filepath);
+static AtlrResult    atlr_fs_load_file(AtlrFile *file, AtlrArena* memory);
+static void          atlr_fs_unload_file(AtlrFile *file);
+static AtlrResult    atlr_fs_save_file(AtlrFile *src);
+static AtlrResult    atlr_fs_copy_file(AtlrFile *src, char *dest, AtlrArena* memory);
+static AtlrResult    atlr_fs_create_directory(char *pathname);
+static AtlrDirectory atlr_fs_get_directory(char *pathname, u64 pathlen, AtlrArena* memory);
+static void          atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir, AtlrArena* memory);
+static void          atlr_fs_build_file(AtlrFile *file, AtlrArena* memory);
+static void          atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir, AtlrArena* memory);
 
 // ===========================================================
 // @header: csv parser
@@ -344,7 +349,7 @@ typedef struct {
    u32 row_count;
 } AtlrCsv;
 
-static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem);
+static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *memory);
 
 // ===========================================================
 // @header: json parser
@@ -403,15 +408,16 @@ typedef struct {
     void *data;
     AtlrJsonTokenType type;
 } AtlrJsonToken;
-static u64             _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens);
-static AtlrJsonValue   _atlr_parse_value(AtlrJsonToken **tokens);
-static AtlrJsonArray*  _atlr_make_array(AtlrJsonToken *cursor);
-static AtlrJsonArray*  _atlr_parse_array(AtlrJsonToken **tokens);
-static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor);
-static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens);
+
+static u64             _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens, AtlrArena* memory);
+static AtlrJsonValue   _atlr_parse_value(AtlrJsonToken **tokens, AtlrArena* memory);
+static AtlrJsonArray*  _atlr_make_array(AtlrJsonToken *cursor, AtlrArena* memory);
+static AtlrJsonArray*  _atlr_parse_array(AtlrJsonToken **tokens, AtlrArena* memory);
+static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor, AtlrArena* memory);
+static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens, AtlrArena* memory);
 static char*           atlr_json_token_type_to_string(AtlrJsonTokenType type);
 static char*           atlr_json_value_type_to_string(AtlrJsonValueType type);
-static AtlrJsonValue   atlr_get_json_from_file(char*);
+static AtlrJsonValue   atlr_get_json_from_file(char* file_location, u64 file_loclen, AtlrArena* memory);
 static AtlrJsonValue*  atlr_get_value_by_key(AtlrJsonObject *object, char* key);
 
 // ===========================================================
@@ -455,23 +461,23 @@ typedef struct {
    AtlrFontAtlas atlas;
 } AtlrFont;
 
-static AtlrFont atlr_font_load(char* font_path, f32 font_scale, AtlrArena* arena);
+static AtlrFont      atlr_font_load(char* font_path, u64 pathlen, f32 font_scale, AtlrArena* arena);
 static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint);
 
 // ===========================================================
 // @header: atlr_rtzr
 // ===========================================================
 
-static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start);
+static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory);
 static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color);
-static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color);
+static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color, AtlrArena* memory);
 static void atlr_rtzr_order_triangle(Triangle *triangle);
-static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
-static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
+static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory);
+static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory);
 static void atlr_rtzr_make_rect_triangles(Rectangle rect, Triangle* triangles);
-static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation);
-static void atlr_rtzr_draw_triangle_texture(u32* data, s32 w, s32 h, Triangle, AtlrImage, u32, u32, b32, Matrix2x2);
-static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation);
+static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory);
+static void atlr_rtzr_draw_triangle_texture(u32* data, s32 w, s32 h, Triangle, AtlrImage, u32, u32, b32, Matrix2x2, AtlrArena*);
+static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory);
 
 // ===========================================================
 // @header: math
@@ -518,13 +524,6 @@ typedef struct {
     u64 laps;
 } AtlrProfileRepetition;
 
-static AtlrProfile _atlr_profiling = {
-    .last_block = 0, 
-    .filtered_id = (char*) "", 
-    .is_within_filter = 0
-};
-static u64 _atlr_profile_current = 0;
-static u64 _atlr_cpu_frequency = 0;
 
 static u64                   atlr_get_cpu_time();
 static u64                   atlr_get_cpu_frequency();
@@ -540,30 +539,64 @@ static b32                   atlr_profile_repetition_lap(AtlrProfileRepetition* 
 static AtlrProfileRepetition atlr_profile_repetition();
 
 // ===========================================================
+// @globals
 // ===========================================================
 
+static AtlrArena ATLR_MEMORY     = {0};
+static AtlrArena ATLR_LOG_MEMORY = {0};
+static FILE*     ATLR_LOG_FILE   = NULL;
+
+static AtlrProfile _atlr_profiling = {
+    .last_block = 0, 
+    .filtered_id = (char*) "", 
+    .is_within_filter = 0
+};
+
+static u64 _atlr_profile_current = 0;
+static u64 _atlr_cpu_frequency = 0;
+
+static AtlrString _atlr_date_str;
+
+static b32 _atlr_random_initialized = 0;
+
 #ifndef ATLR_HEADER_ONLY
+
+// ===========================================================
+// @implementation: init
+// ===========================================================
+
+static void atlr_init(AtlrArena* memory) {
+    if (ATLR_MEMORY.capacity == 0) {
+        ATLR_MEMORY = atlr_mem_slice(memory, ATLR_MEMORY_CAPACITY);
+    }
+
+    if (ATLR_LOG_FILE == NULL) {
+        ATLR_LOG_FILE = stdout;
+    }
+
+    if (ATLR_LOG_MEMORY.capacity == 0) {
+        ATLR_LOG_MEMORY = atlr_mem_slice(&ATLR_MEMORY, sizeof(char) * 50);
+    }
+}
 
 // ===========================================================
 // @implementation: string functions
 // ===========================================================
 
-static AtlrString atlr_str_create_empty_with_capacity(u32 capacity) {
+static AtlrString atlr_str_create_empty_with_capacity(u32 capacity, AtlrArena* memory) {
     AtlrString str = {};
     str.len = 0;
     str.capacity = capacity;
-    str.data = (char*) malloc(sizeof(char) * str.capacity);
-    memset(str.data, 0, str.capacity);
+    str.data = (char*) atlr_mem_allocate(memory, sizeof(char) * str.capacity);
     return str;
 }
 
-static AtlrString atlr_str_create_empty() {
-    return atlr_str_create_empty_with_capacity(ATLR_DEFAULT_STR_CAPACITY);
+static AtlrString atlr_str_create_empty(AtlrArena* memory) {
+    return atlr_str_create_empty_with_capacity(ATLR_DEFAULT_STR_CAPACITY, memory);
 }
 
-static AtlrString atlr_str_create_from(char *str) {
-    u64 len = strlen(str);
-    AtlrString _str = atlr_str_create_empty_with_capacity(len * 2);
+static AtlrString atlr_str_create_from(char *str, u64 len, AtlrArena* memory) {
+    AtlrString _str = atlr_str_create_empty_with_capacity(len * 2, memory);
     for (u32 i = 0; i < len; i++) {
         _str.data[i] = str[i];
     }
@@ -571,24 +604,25 @@ static AtlrString atlr_str_create_from(char *str) {
     return _str;
 }
 
-static void atlr_str_increase_capacity(AtlrString *str) {
-    str->capacity *= 2;
-    char *new_data = (char*) malloc(sizeof(char) * str->capacity);
-    memset(new_data, 0, str->capacity);
+static void atlr_str_increase_capacity(AtlrString *str, u64 new_capacity, AtlrArena* memory) {
+    if (str->capacity > new_capacity) {
+        return;
+    }
+    str->capacity = new_capacity;
+    char *new_data = (char*) atlr_mem_allocate(memory, sizeof(char) * str->capacity);
     for (u32 i = 0; i <= str->len; i++) {
         new_data[i] = str->data[i];
     }
-    free(str->data);
     str->data = new_data;
 }
 
-static void atlr_str_concat_atlr_string(AtlrString *dest, AtlrString *src) {
-    atlr_str_concat_string(dest, src->data, src->len);
+static void atlr_str_concat_atlr_string(AtlrString *dest, AtlrString *src, AtlrArena* memory) {
+    atlr_str_concat_string(dest, src->data, src->len, memory);
 }
 
-static void atlr_str_concat_string(AtlrString *str, char *data, u32 len) {
+static void atlr_str_concat_string(AtlrString *str, char *data, u32 len, AtlrArena* memory) {
     while ((len + str->len) >= str->capacity) {
-        atlr_str_increase_capacity(str);
+        atlr_str_increase_capacity(str, len + str->len + 1, memory);
     }
     for (u32 i = 0; i < len; i++) {
         str->data[str->len + i] = data[i];
@@ -596,9 +630,9 @@ static void atlr_str_concat_string(AtlrString *str, char *data, u32 len) {
     str->len += len;
 }
 
-static void atlr_str_concat_char(AtlrString *str, char data) {
+static void atlr_str_concat_char(AtlrString *str, char data, AtlrArena* memory) {
     while ((1 + str->len) >= str->capacity) {
-        atlr_str_increase_capacity(str);
+        atlr_str_increase_capacity(str, 1 + str->len, memory);
     }
     str->data[str->len] = data;
     str->len += 1;
@@ -606,7 +640,6 @@ static void atlr_str_concat_char(AtlrString *str, char data) {
 
 static void atlr_str_clear(AtlrString *string) {
     string->len = 0;
-    memset(string->data, 0, string->capacity);
 }
 
 static void atlr_str_to_lower(AtlrString *str) {
@@ -625,29 +658,41 @@ static s64 atlr_str_find_char_last_pos(AtlrString *str, char c) {
 }
 
 static AtlrString atlr_str_get_left_side_from_pos(AtlrString *str, u64 split_pos) {
-    AtlrString left_side = atlr_str_create_empty();
-    for (u64 i = 0; i < split_pos; i++) {
-        atlr_str_concat_char(&left_side, str->data[i]);
+    if (split_pos > str->len) {
+        return *str;
     }
+    AtlrString left_side = {
+        .data = str->data,
+        .capacity = split_pos,
+        .len = split_pos,
+    };
     return left_side;
 }
 
 static AtlrString atlr_str_get_right_side_from_pos(AtlrString *str, u64 split_pos) {
-    AtlrString right_side = atlr_str_create_empty();
-    for (u64 i = split_pos; i < str->len; i++) {
-        atlr_str_concat_char(&right_side, str->data[i]);
+    if (split_pos > str->len) {
+        return (AtlrString) {
+            .data = str->data,
+            .capacity = 0,
+            .len = 0,
+        };
     }
+    AtlrString right_side = {
+        .data = str->data + split_pos,
+        .capacity = str->len - split_pos,
+        .len = str->len - split_pos,
+    };
     return right_side;
 }
 
-static AtlrString atlr_str_left_pad(char *start_str, u16 width, char pad_char) {
-    AtlrString str = atlr_str_create_empty();
-    atlr_str_concat_string(&str, start_str, strlen(start_str));
+static AtlrString atlr_str_left_pad(char *start_str, u16 width, char pad_char, AtlrArena* memory) {
+    AtlrString str = atlr_str_create_empty(memory);
+    atlr_str_concat_string(&str, start_str, strlen(start_str), memory);
     if (str.len > width) {
         return str;
     }
-    while (width > str.capacity) {
-        atlr_str_increase_capacity(&str);
+    if (width > str.capacity) {
+        atlr_str_increase_capacity(&str, width + 1, memory);
     }
     // WARNING: This is so dumb
     // sprintf string formatting has a way to do this out of the box, move to
@@ -667,18 +712,16 @@ static AtlrString atlr_str_left_pad(char *start_str, u16 width, char pad_char) {
 // TODO: Consider moving to SDLs functions
 // ===========================================================
 
-AtlrString _atlr_date_str;
-
 static u64 atlr_dt_get_time() {
     TimeVal time = {};
     gettimeofday(&time, NULL);
     return (ATLR_SEC_TO_US * time.tv_sec) + time.tv_usec;
 }
 
-static AtlrString atlr_dt_get_current_time_str() {
+static AtlrString atlr_dt_get_current_time_str(AtlrArena* memory) {
     // NOTE: ISO-8601
     if (_atlr_date_str.capacity == 0) {
-        _atlr_date_str = atlr_str_create_empty_with_capacity(50);
+        _atlr_date_str = atlr_str_create_empty_with_capacity(50, memory);
     } else {
          atlr_str_clear(&_atlr_date_str);
     }
@@ -693,17 +736,11 @@ static AtlrString atlr_dt_get_current_time_str() {
 // @implementation: atlr_logger
 // ===========================================================
 
-static void _atlr_log_init() {
-    if (_ATLR_LOG_FILE == NULL) {
-        _ATLR_LOG_FILE = stdout;
-    }
-}
-
 static void atlr_log_set_output(char* output) {
-    if (_ATLR_LOG_FILE != NULL && _ATLR_LOG_FILE != stdout) {
-        fclose(_ATLR_LOG_FILE);
+    if (ATLR_LOG_FILE != NULL && ATLR_LOG_FILE != stdout) {
+        fclose(ATLR_LOG_FILE);
     }
-    _ATLR_LOG_FILE = fopen(output, "a");
+    ATLR_LOG_FILE = fopen(output, "a");
     atlr_log_debug("set log output to %s", output);
 }
 
@@ -745,8 +782,6 @@ static char* atlr_get_error_message(AtlrResult r) {
 // @implementation: random
 // NOTE: functions are inclusive of the limits
 // ===========================================================
-
-static b32 _atlr_random_initialized = 0;
 
 static void _atlr_init_random() {
     if (_atlr_random_initialized) {
@@ -815,13 +850,12 @@ static f64 atlr_random_f64(f64 upper_limit, f64 lower_limit) {
 // @implementation: memory arena functions
 // ===========================================================
 
-static AtlrArena atlr_mem_create_arena(u64 capacity) {
-    AtlrArena arena = (AtlrArena) {
-        .data = malloc(capacity),
+static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity) {
+    return (AtlrArena) {
+        .data = memory,
         .capacity = capacity,
         .used = 0,
     };
-    return arena;
 }
 
 static u8* atlr_mem_allocate(AtlrArena* arena, u64 size) {
@@ -849,17 +883,11 @@ static void atlr_mem_clear(AtlrArena* arena, char* id) {
     arena->used = 0;
 }
 
-static void atlr_mem_free(AtlrArena* arena, char* id) {
-    atlr_log_info("freeing mem arena (%s): used: %0.5f %%", id, ((f64) arena->used / arena->capacity) * 100.0);
-    free(arena->data);
-    arena->used = 0;
-}
-
 // ===========================================================
-// @implementation: atlr_fs
+// @implementation: files
 // ===========================================================
 
-static void atlr_fs_build_file(AtlrFile *file) {
+static void atlr_fs_build_file(AtlrFile *file, AtlrArena* memory) {
     if (file->path.len == 0) {
         atlr_log_error("Missing file's path");
         return;
@@ -873,7 +901,7 @@ static void atlr_fs_build_file(AtlrFile *file) {
     file->parent = atlr_str_get_left_side_from_pos(&file->path, dir_pos + 1);;
     file->filename = atlr_str_get_right_side_from_pos(&file->path, dir_pos + 1);;
     if (format_pos < 0) {
-        file->format = atlr_str_create_empty();
+        file->format = atlr_str_create_empty(memory);
     } else {
         file->format = atlr_str_get_right_side_from_pos(&file->path, format_pos + 1);;
         atlr_str_to_lower(&file->format);
@@ -887,14 +915,14 @@ static void atlr_fs_build_file(AtlrFile *file) {
     }
 }
 
-static AtlrFile *atlr_fs_get_file(char *filepath) {
-    AtlrFile *file = (AtlrFile *) malloc(sizeof(AtlrFile));
-    file->path = atlr_str_create_from(filepath);
-    atlr_fs_build_file(file);
+static AtlrFile *atlr_fs_get_file(char *filepath, u64 pathlen, AtlrArena* memory) {
+    AtlrFile *file = (AtlrFile *) atlr_mem_allocate(memory, sizeof(AtlrFile));
+    file->path = atlr_str_create_from(filepath, pathlen, memory);
+    atlr_fs_build_file(file, memory);
     return file;
 }
 
-static AtlrResult atlr_fs_load_file(AtlrFile *file) {
+static AtlrResult atlr_fs_load_file(AtlrFile *file, AtlrArena* memory) {
     if (file->is_directory) {
         return (AtlrResult) { 
             .is_success = 0, 
@@ -917,7 +945,7 @@ static AtlrResult atlr_fs_load_file(AtlrFile *file) {
             };
         }
 
-        file->data = malloc(file->size);
+        file->data = atlr_mem_allocate(memory, file->size);
         read(fd, file->data, file->size);
         file->is_loaded = 1;
         close(fd);
@@ -926,10 +954,6 @@ static AtlrResult atlr_fs_load_file(AtlrFile *file) {
 }
 
 static void atlr_fs_unload_file(AtlrFile *file) {
-    if (!file->is_loaded) {
-        return;
-    }
-    free(file->data);
     file->is_loaded = 0;
 }
 
@@ -946,8 +970,8 @@ static AtlrResult atlr_fs_save_file(AtlrFile *src) {
     return (AtlrResult) { .is_success = 1, };
 }
 
-static AtlrResult atlr_fs_copy_file(AtlrFile *src, char *dest) {
-    AtlrResult load_res = atlr_fs_load_file(src);
+static AtlrResult atlr_fs_copy_file(AtlrFile *src, char *dest, AtlrArena* memory) {
+    AtlrResult load_res = atlr_fs_load_file(src, memory);
     if (!load_res.is_success) {
         return load_res;
     }
@@ -978,18 +1002,32 @@ static AtlrResult atlr_fs_create_directory(char *pathname) {
     return r;
 }
 
-static AtlrDirectory atlr_fs_get_directory(char *pathname) {
-    AtlrDirectory atlr_dir = {};
-    AtlrString dir_path = atlr_str_create_from(pathname);
+static AtlrDirectory atlr_fs_get_directory(char *pathname, u64 pathlen, AtlrArena* memory) {
+    AtlrDirectory atlr_dir = {
+        .capacity = 0,
+    };
+    AtlrString dir_path = atlr_str_create_from(pathname, pathlen, memory);
     if (dir_path.data[dir_path.len - 1] != '/') {
-        atlr_str_concat_char(&dir_path, '/');
+        atlr_str_concat_char(&dir_path, '/', memory);
     }
-    atlr_dir.capacity = 64;
-    atlr_dir.files = (AtlrFile *) malloc(sizeof(AtlrFile) * atlr_dir.capacity);
+
+    DIR *directory = opendir(atlr_dir.path.data);
+    DIR *base_directory = directory;
+    while (directory) {
+        DirEnt *entry = readdir(directory);
+        if (!entry) {
+            break;
+        }
+        if (entry->d_type == 8) {
+            atlr_dir.capacity++;
+        }
+    }
+
+    atlr_dir.files = (AtlrFile *) atlr_mem_allocate(memory, sizeof(AtlrFile) * atlr_dir.capacity);
     atlr_dir.path = dir_path;
     atlr_dir.count = 0;
 
-    DIR *directory = opendir(atlr_dir.path.data);
+    directory = base_directory;
     while (directory) {
         DirEnt *entry = readdir(directory);
         // NOTE(torija): `entry->d_type == 4` if its a directory
@@ -998,22 +1036,18 @@ static AtlrDirectory atlr_fs_get_directory(char *pathname) {
         }
 
         if (entry->d_type == 8) {
-            AtlrString filename = atlr_str_create_empty_with_capacity(60);
+            AtlrString filename = atlr_str_create_empty_with_capacity(60, memory);
 
-            atlr_str_concat_atlr_string(&filename, &dir_path);
+            atlr_str_concat_atlr_string(&filename, &dir_path, memory);
             if (filename.data[filename.len - 1] != '/') {
-                atlr_str_concat_char(&filename, '/');
+                atlr_str_concat_char(&filename, '/', memory);
             }
-            atlr_str_concat_string(&filename, entry->d_name, strlen(entry->d_name));
+            atlr_str_concat_string(&filename, entry->d_name, strlen(entry->d_name), memory);
 
-            if (atlr_dir.count >= atlr_dir.capacity) {
-                atlr_dir.capacity *= 2;
-                atlr_dir.files = (AtlrFile *) realloc(atlr_dir.files, sizeof(AtlrFile) * atlr_dir.capacity);
-            }
             AtlrFile *file = (atlr_dir.files + atlr_dir.count); 
             memset(file, 0, sizeof(AtlrFile));
             file->path = filename;
-            atlr_fs_build_file(file);
+            atlr_fs_build_file(file, memory);
             atlr_dir.count++;
         } else if (errno != 0) {
             // TODO(torija): handle error
@@ -1022,23 +1056,23 @@ static AtlrDirectory atlr_fs_get_directory(char *pathname) {
     return atlr_dir;
 }
 
-static void atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir) {
+static void atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir, AtlrArena* memory) {
     AtlrResult result = atlr_fs_create_directory(dest_dir->data);
     if (!result.is_success) {
         atlr_log_error("atlr_fs_copy_dir: Could not create dest directory");
     }
-    AtlrString dest_file_name = atlr_str_create_empty_with_capacity(60);
+    AtlrString dest_file_name = atlr_str_create_empty_with_capacity(60, memory);
     for (u32 i = 0; i < directory->count; i++) {
         AtlrFile file = directory->files[i];
         atlr_str_clear(&dest_file_name);
-        atlr_str_concat_atlr_string(&dest_file_name, dest_dir);
-        atlr_str_concat_atlr_string(&dest_file_name, &file.filename);
-        atlr_fs_copy_file(&file, dest_file_name.data);
+        atlr_str_concat_atlr_string(&dest_file_name, dest_dir, memory);
+        atlr_str_concat_atlr_string(&dest_file_name, &file.filename, memory);
+        atlr_fs_copy_file(&file, dest_file_name.data, memory);
     }
 }
 
-static void atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir) {
-    AtlrDirectory dir = atlr_fs_get_directory(dir_name->data);
+static void atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir, AtlrArena* memory) {
+    AtlrDirectory dir = atlr_fs_get_directory(dir_name->data, dir_name->len, memory);
     for (u16 i = 0; i < dir.count; i++) {
         AtlrFile file = dir.files[i];
         remove(file.path.data);
@@ -1049,13 +1083,13 @@ static void atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir) {
 }
 
 // ===========================================================
-// @implementation: atlr_csv
+// @implementation: csv
 // ===========================================================
 
-static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
+static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *memory) {
     u32 current_column = 0;
     u32 current_row = 0;
-    AtlrString current = atlr_str_create_empty();
+    AtlrString current = atlr_str_create_empty(memory);
 
     u64 header_fields = 0;
     u64 reading_header = 1;
@@ -1079,10 +1113,10 @@ static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
     }
 
     AtlrCsv csv = {
-        .rows = (AtlrCsvRow*) atlr_mem_allocate(mem, sizeof(AtlrCsvRow) * row_count),
+        .rows = (AtlrCsvRow*) atlr_mem_allocate(memory, sizeof(AtlrCsvRow) * row_count),
         .row_count = 0,
     };
-    AtlrString *header = (AtlrString*) atlr_mem_allocate(mem, sizeof(AtlrString) * header_fields);
+    AtlrString *header = (AtlrString*) atlr_mem_allocate(memory, sizeof(AtlrString) * header_fields);
 
 
     b32 is_header = 1;
@@ -1100,8 +1134,8 @@ static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
                 }
 
                 current_column = 0;
-                current = atlr_str_create_empty();
-                csv.rows[current_row].cols = (AtlrCsvColumn*) atlr_mem_allocate(mem, sizeof(AtlrCsvColumn) * header_fields);
+                current = atlr_str_create_empty(memory);
+                csv.rows[current_row].cols = (AtlrCsvColumn*) atlr_mem_allocate(memory, sizeof(AtlrCsvColumn) * header_fields);
                 csv.rows[current_row].col_count = header_fields;
             } break;
 
@@ -1113,11 +1147,11 @@ static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
                     csv.rows[current_row].cols[current_column].value = current;
                 }
                 current_column++;
-                current = atlr_str_create_empty();
+                current = atlr_str_create_empty(memory);
             } break;
 
             default: {
-                atlr_str_concat_char(&current, csv_contents[i]);
+                atlr_str_concat_char(&current, csv_contents[i], memory);
             } break;
         }
 
@@ -1127,12 +1161,13 @@ static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
 }
 
 // ===========================================================
-// @implementation: atlr_json
+// @implementation: json
 // ===========================================================
 
-static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens) {
+static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens, AtlrArena* memory) {
     atlr_profile_start_with_id((char*) __func__, contents_size);
     u64 current_token = 0;
+    AtlrArena scratchpad = atlr_mem_slice(memory, sizeof(char) * 100);
     for (s64 i = 0; i < contents_size; i++) {
         switch (contents[i]) {
             case '{': {
@@ -1183,7 +1218,7 @@ static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToke
                 size_string += 2;
 
                 atlr_profile_start_with_id((char*) "tokenize string", sizeof(char) * size_string + 1);
-                char *value = (char*) malloc(sizeof(char) * size_string + 1);
+                char *value = (char*) atlr_mem_allocate(memory, sizeof(char) * size_string + 1);
                 // TODO(torija): handle escape sequences
                 for (u32 j = 0; j < size_string; j++) {
                     value[j] = contents[start_position + j];
@@ -1213,18 +1248,18 @@ static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToke
                     }
                     i--;
                     atlr_profile_start_with_id((char*) "value", sizeof(char) * size_string);
-                    char *value = (char *) malloc(sizeof(char) * size_string);
+                    char *value = (char *) atlr_mem_allocate(&scratchpad, sizeof(char) * size_string);
                     for (u32 j = 0; j < size_string; j++) {
                         value[j] = contents[start_position + j];
                     }
                     atlr_profile_end();
                     tokens[current_token].type = ATLR_JSON_TOKEN_TYPE_NUMBER;
                     atlr_profile_start_with_id((char*) "to float", sizeof(f64));
-                    f64 *value_float = (f64 *) malloc(sizeof(f64));
+                    f64 *value_float = (f64 *) atlr_mem_allocate(memory, sizeof(f64));
                     *value_float = atlr_string_to_f64(value, size_string);
                     atlr_profile_end();
                     tokens[current_token].data = value_float;
-                    free(value);
+                    atlr_mem_clear(&scratchpad, (char*)__func__);
                     current_token++;
                     atlr_profile_end();
                 } else {
@@ -1238,16 +1273,16 @@ static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToke
     return current_token;
 }
 
-static AtlrJsonValue _atlr_parse_value(AtlrJsonToken **cursor) {
+static AtlrJsonValue _atlr_parse_value(AtlrJsonToken **cursor, AtlrArena* memory) {
 
     atlr_profile_start_with_id((char *)__func__, 0);
     AtlrJsonValue val = {};
     
     if ((*cursor)->type == ATLR_JSON_TOKEN_TYPE_LEFT_BRACE) {
-        val.data = _atlr_parse_object(cursor);
+        val.data = _atlr_parse_object(cursor, memory);
         val.type = ATLR_JSON_VALUE_TYPE_OBJECT;
     } else if ((*cursor)->type == ATLR_JSON_TOKEN_TYPE_LEFT_BRACKET) {
-        val.data = _atlr_parse_array(cursor);
+        val.data = _atlr_parse_array(cursor, memory);
         val.type = ATLR_JSON_VALUE_TYPE_ARRAY;
     } else if ((*cursor)->type == ATLR_JSON_TOKEN_TYPE_STRING) {
         val.data = (*cursor)->data;
@@ -1257,7 +1292,7 @@ static AtlrJsonValue _atlr_parse_value(AtlrJsonToken **cursor) {
         val.type = ATLR_JSON_VALUE_TYPE_NUMBER;
     } else if ((*cursor)->type == ATLR_JSON_TOKEN_TYPE_BOOLEAN_TRUE || 
         (*cursor)->type == ATLR_JSON_TOKEN_TYPE_BOOLEAN_FALSE) {
-        b32* value = (b32*) malloc(sizeof(b32));
+        b32* value = (b32*) atlr_mem_allocate(memory, sizeof(b32));
         *value = 0;
         if ((*cursor)->type == ATLR_JSON_TOKEN_TYPE_BOOLEAN_TRUE) {
             *value = 1;
@@ -1276,8 +1311,8 @@ static AtlrJsonValue _atlr_parse_value(AtlrJsonToken **cursor) {
     return val;
 }
 
-static AtlrJsonArray* _atlr_make_array(AtlrJsonToken *cursor) {
-    AtlrJsonArray *arr = (AtlrJsonArray *) malloc(sizeof(AtlrJsonArray));
+static AtlrJsonArray* _atlr_make_array(AtlrJsonToken *cursor, AtlrArena* memory) {
+    AtlrJsonArray *arr = (AtlrJsonArray *) atlr_mem_allocate(memory, sizeof(AtlrJsonArray));
     arr->len = 0;
 
     b32 in_object = 0, in_array = 0;
@@ -1320,12 +1355,12 @@ static AtlrJsonArray* _atlr_make_array(AtlrJsonToken *cursor) {
             in_array = 0;
         }
     }
-    arr->values = (AtlrJsonValue*) malloc(sizeof(AtlrJsonValue) * arr->len);
+    arr->values = (AtlrJsonValue*) atlr_mem_allocate(memory, sizeof(AtlrJsonValue) * arr->len);
     return arr;
 }
 
-static AtlrJsonArray* _atlr_parse_array(AtlrJsonToken **tokens) {
-    AtlrJsonArray *arr = _atlr_make_array(*tokens);
+static AtlrJsonArray* _atlr_parse_array(AtlrJsonToken **tokens, AtlrArena* memory) {
+    AtlrJsonArray *arr = _atlr_make_array(*tokens, memory);
     u64 count = 0;
     loop {
         (*tokens)++;
@@ -1334,14 +1369,14 @@ static AtlrJsonArray* _atlr_parse_array(AtlrJsonToken **tokens) {
         } else if ((*tokens)->type == ATLR_JSON_TOKEN_TYPE_RIGHT_BRACKET) {
             break;
         } else {
-            *(arr->values + count) = _atlr_parse_value(tokens);
+            *(arr->values + count) = _atlr_parse_value(tokens, memory);
         }
     }
     return arr;
 }
 
-static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor) {
-    AtlrJsonObject *object = (AtlrJsonObject *) malloc(sizeof(AtlrJsonObject));
+static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor, AtlrArena* memory) {
+    AtlrJsonObject *object = (AtlrJsonObject *) atlr_mem_allocate(memory, sizeof(AtlrJsonObject));
     object->len = 0;
 
     b32 in_object = 0, in_array = 0;
@@ -1383,16 +1418,16 @@ static AtlrJsonObject* _atlr_make_object(AtlrJsonToken *cursor) {
             in_array = 0;
         }
     }
-    object->pairs = (AtlrJsonKeyValuePair*) malloc(sizeof(AtlrJsonKeyValuePair) * object->len);
+    object->pairs = (AtlrJsonKeyValuePair*) atlr_mem_allocate(memory, sizeof(AtlrJsonKeyValuePair) * object->len);
     for (u64 i = 0; i < object->len; i++) {
-        (object->pairs + i)->value = (AtlrJsonValue*) malloc(sizeof(AtlrJsonValue));
+        (object->pairs + i)->value = (AtlrJsonValue*) atlr_mem_allocate(memory, sizeof(AtlrJsonValue));
     }
     return object;
 }
 
-static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens) {
+static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens, AtlrArena* memory) {
     atlr_profile_start_with_id((char*) __func__, 0);
-    AtlrJsonObject *object = _atlr_make_object(*tokens);
+    AtlrJsonObject *object = _atlr_make_object(*tokens, memory);
     u64 count = 0;
     loop {
         (*tokens)++;
@@ -1401,16 +1436,16 @@ static AtlrJsonObject* _atlr_parse_object(AtlrJsonToken **tokens) {
             (*tokens)++;
             if ((*tokens)->type == ATLR_JSON_TOKEN_TYPE_COLON) {
                 (*tokens)++;
-                *(object->pairs + count)->value = _atlr_parse_value(tokens);
+                *(object->pairs + count)->value = _atlr_parse_value(tokens, memory);
             } else {
-                printf("Not sure where we are\n");
+                atlr_log_debug("Not sure where we are");
             }
         } else if ((*tokens)->type == ATLR_JSON_TOKEN_TYPE_COMMA) {
             count++;
         } else if ((*tokens)->type == ATLR_JSON_TOKEN_TYPE_RIGHT_BRACE) {
             break;
         } else {
-            printf("Wut?");
+            atlr_log_debug("Wut?");
             break;
         }
     }
@@ -1451,39 +1486,12 @@ static char* atlr_json_value_type_to_string(AtlrJsonValueType type) {
 }
 
 
-static AtlrJsonValue atlr_get_json_from_file(char* file_location) {
+static AtlrJsonValue atlr_get_json_from_file(char* file_location, u64 file_loclen, AtlrArena* memory) {
     atlr_profile_filter((char*) "tokens");
 
-    // NOTE: repetition testing
-    {
-        AtlrProfileRepetition repetition = atlr_profile_repetition();
-        loop {
-            u32 fd_json = open(file_location, O_RDONLY); 
-            FileStat meta = {};
-            u32 result = fstat(fd_json, &meta);
-            if (result != 0 || meta.st_size == 0) {
-                printf("Could not read json file\n");
-                // TODO(torija): handle error
-                return (AtlrJsonValue){};
-            }
-
-            atlr_profile_init_block(&repetition.current, (char*) "read_file", sizeof(char) * meta.st_size);
-
-            // NOTE: try mmap
-            char *json_contents = (char*) malloc(sizeof(char) * meta.st_size);
-            read(fd_json, json_contents, sizeof(char) * meta.st_size);
-            close(fd_json);
-            free(json_contents);
-
-            if (!atlr_profile_repetition_lap(&repetition)) {
-                break;
-            }
-        }
-    }
-
-    AtlrFile* json_file = atlr_fs_get_file(file_location);
+    AtlrFile* json_file = atlr_fs_get_file(file_location, file_loclen, memory);
     atlr_profile_start_with_id((char*) "read_file", json_file->size);
-    atlr_fs_load_file(json_file);
+    atlr_fs_load_file(json_file, memory);
     atlr_profile_end();
     if (!json_file->is_loaded) {
         atlr_log_error("Could not read json file\n");
@@ -1493,12 +1501,12 @@ static AtlrJsonValue atlr_get_json_from_file(char* file_location) {
 
     atlr_profile_start_with_id((char*) "tokens", sizeof(AtlrJsonToken) * json_file->size);
     // TODO(torija): extremely oversized, do better (；⌣̀_⌣́)
-    AtlrJsonToken *tokens = (AtlrJsonToken *) malloc(sizeof(AtlrJsonToken) * json_file->size);
-    _atlr_tokenize_string(json_file->data, json_file->size, tokens);
+    AtlrJsonToken *tokens = (AtlrJsonToken *) atlr_mem_allocate(memory, sizeof(AtlrJsonToken) * json_file->size);
+    _atlr_tokenize_string(json_file->data, json_file->size, tokens, memory);
     atlr_profile_end();
 
     atlr_profile_start_with_id((char*) "parse", 0);
-    AtlrJsonValue value = _atlr_parse_value(&tokens);
+    AtlrJsonValue value = _atlr_parse_value(&tokens, memory);
     atlr_profile_end();
 
     atlr_profile_print();
@@ -1546,9 +1554,10 @@ static u32 atlr_image_get_color(AtlrImage img, s32 x, s32 y) {
 // @implementation: font
 // ===========================================================
 
-static AtlrFont atlr_font_load(char* font_path, f32 font_scale, AtlrArena* arena) {
-    AtlrFile* font_file = atlr_fs_get_file(font_path);
-    atlr_fs_load_file(font_file);
+// TODO: don't load file here
+static AtlrFont atlr_font_load(char* font_path, u64 pathlen, f32 font_scale, AtlrArena* memory) {
+    AtlrFile* font_file = atlr_fs_get_file(font_path, pathlen, memory);
+    atlr_fs_load_file(font_file, memory);
     AtlrFont atlr_font = {
         .font_file = font_file,
         .scale = font_scale,
@@ -1557,7 +1566,7 @@ static AtlrFont atlr_font_load(char* font_path, f32 font_scale, AtlrArena* arena
     stbtt_InitFont(&atlr_font.font, (u8*)atlr_font.font_file->data, offset);
     atlr_font.pixel_height = stbtt_ScaleForPixelHeight(&atlr_font.font, font_scale);
     atlr_font.atlas = (AtlrFontAtlas) {
-        .glyphs = (AtlrFontGlyph*) atlr_mem_allocate(arena, sizeof(AtlrFontGlyph) * atlr_font.font.numGlyphs),
+        .glyphs = (AtlrFontGlyph*) atlr_mem_allocate(memory, sizeof(AtlrFontGlyph) * atlr_font.font.numGlyphs),
         .capacity = atlr_font.font.numGlyphs,
         .last = 0,
     };
@@ -1613,11 +1622,10 @@ static void atlr_rtzr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 c
     }
 }
 
-static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start) {
+static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory) {
     Line line = (Line) {};
     line.count = abs(ind_end - ind_start);
-    // TODO: use mem arena
-    line.points = (Vec2*) malloc(sizeof(Vec2) * line.count);
+    line.points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * line.count);
     f64 slope = (f64) (dep_end - dep_start) / (f64) (ind_end - ind_start);
     for (s32 i = 0; i < (s32) line.count; i++) {
         line.points[i] = (Vec2) {
@@ -1669,7 +1677,7 @@ static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 colo
     data[fb_y * w + fb_x] = color;
 }
 
-static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color) {
+static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color, AtlrArena* memory) {
     if (atlr_algebra_vec2_equal(from, to)) {
         atlr_rtzr_draw_pixel(data, w, h, from.x, from.y, color);
         return;
@@ -1680,12 +1688,13 @@ static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32
     Vec2 vector = atlr_algebra_vec2_substract(last_point, first_point);
 
     Line line;
+
     if (fabs(vector.x) > fabs(vector.y))  {
         if (last_point.x < first_point.x) {
             first_point = to;
             last_point = from;
         }
-        line = atlr_rtzr_interpolate(last_point.y, first_point.y, last_point.x, first_point.x);
+        line = atlr_rtzr_interpolate(last_point.y, first_point.y, last_point.x, first_point.x, memory);
         for (u32 i = 0; i < line.count; i++) {
             atlr_rtzr_draw_pixel(data, w, h, line.points[i].values[0], line.points[i].values[1], color);
         }
@@ -1694,31 +1703,33 @@ static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32
             first_point = to;
             last_point = from;
         }
-        line = atlr_rtzr_interpolate(last_point.x, first_point.x, last_point.y, first_point.y);
+        line = atlr_rtzr_interpolate(last_point.x, first_point.x, last_point.y, first_point.y, memory);
         for (u32 i = 0; i < line.count; i++) {
             atlr_rtzr_draw_pixel(data, w, h, line.points[i].values[1], line.points[i].values[0], color);
         }
     }
-    free(line.points);
 }
 
-static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color) {
-    atlr_rtzr_draw_line(data, w, h, triangle.points[0], triangle.points[1],  color);
-    atlr_rtzr_draw_line(data, w, h, triangle.points[1], triangle.points[2],  color);
-    atlr_rtzr_draw_line(data, w, h, triangle.points[2], triangle.points[0],  color);
+static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory) {
+    atlr_rtzr_draw_line(data, w, h, triangle.points[0], triangle.points[1], color, memory);
+    atlr_rtzr_draw_line(data, w, h, triangle.points[1], triangle.points[2], color, memory);
+    atlr_rtzr_draw_line(data, w, h, triangle.points[2], triangle.points[0], color, memory);
 }
 
-static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color) {
+static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory) {
     atlr_rtzr_order_triangle(&triangle);
 
-    Line line01 = atlr_rtzr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y);
-    Line line12 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y);
-    Line line02 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y);
+    Line line01 = atlr_rtzr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
+    Line line12 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
+    Line line02 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
 
     Line line012 = (Line) {
-        .points = (Vec2*) realloc(line01.points, sizeof(Vec2) * (line01.count + line12.count)),
+        .points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * (line01.count + line12.count)),
         .count = line01.count + line12.count,
     };
+    for (u32 i = 0; i < line01.count; i++) {
+        line012.points[i] = line01.points[i];
+    }
     for (u32 i = 0; i < line12.count; i++) {
         line012.points[i + line01.count] = line12.points[i];
     }
@@ -1741,13 +1752,9 @@ static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle tri
             atlr_rtzr_draw_pixel(data, w, h, x, y, color);
         }
     }
-    free(line12.points);
-    free(line02.points);
-    free(line012.points);
 }
 
-
-static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation) {
+static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory) {
     Triangle t[2];
     atlr_rtzr_make_rect_triangles(rect, t);
     t[0].points[0] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[0]);
@@ -1756,8 +1763,8 @@ static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle r
     t[1].points[0] = atlr_algebra_cross_m2x2_v2(rotation, t[1].points[0]);
     t[1].points[1] = atlr_algebra_cross_m2x2_v2(rotation, t[1].points[1]);
     t[1].points[2] = atlr_algebra_cross_m2x2_v2(rotation, t[1].points[2]);
-    atlr_rtzr_draw_filled_triangle(data, w, h, t[0], color);
-    atlr_rtzr_draw_filled_triangle(data, w, h, t[1], color);
+    atlr_rtzr_draw_filled_triangle(data, w, h, t[0], color, memory);
+    atlr_rtzr_draw_filled_triangle(data, w, h, t[1], color, memory);
 }
 
 static void atlr_rtzr_draw_triangle_texture(
@@ -1767,18 +1774,22 @@ static void atlr_rtzr_draw_triangle_texture(
     u32 rect_w, 
     u32 rect_h,
     b32 right_side,
-    Matrix2x2 rotation
+    Matrix2x2 rotation,
+    AtlrArena* memory
 ) {
     atlr_rtzr_order_triangle(&triangle);
 
-    Line line01 = atlr_rtzr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y);
-    Line line12 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y);
-    Line line02 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y);
+    Line line01 = atlr_rtzr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
+    Line line12 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
+    Line line02 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
 
     Line line012 = (Line) {
-        .points = (Vec2*) realloc(line01.points, sizeof(Vec2) * (line01.count + line12.count)),
+        .points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * (line01.count + line12.count)),
         .count = line01.count + line12.count,
     };
+    for (u32 i = 0; i < line01.count; i++) {
+        line012.points[i] = line01.points[i];
+    }
     for (u32 i = 0; i < line12.count; i++) {
         line012.points[i + line01.count] = line12.points[i];
     }
@@ -1822,17 +1833,14 @@ static void atlr_rtzr_draw_triangle_texture(
             atlr_rtzr_draw_pixel(data, w, h, point.x, point.y, color);
         }
     }
-    free(line12.points);
-    free(line02.points);
-    free(line012.points);
 }
 
-static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation) {
+static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory) {
     Triangle t[2];
     atlr_rtzr_make_rect_triangles(dest, t);
 
-    atlr_rtzr_draw_triangle_texture(data, w, h, t[0], image, dest.w, dest.h, 0, rotation);
-    atlr_rtzr_draw_triangle_texture(data, w, h, t[1], image, dest.w, dest.h, 1, rotation);
+    atlr_rtzr_draw_triangle_texture(data, w, h, t[0], image, dest.w, dest.h, 0, rotation, memory);
+    atlr_rtzr_draw_triangle_texture(data, w, h, t[1], image, dest.w, dest.h, 1, rotation, memory);
 }
 
 // ===========================================================
@@ -2000,7 +2008,6 @@ static void atlr_profile_start_with_id(char* id, u64 bytes_processed) {
         return;
     }
 
-
     AtlrProfileBlock *current = &_atlr_profiling.blocks[_atlr_profile_current];
 
     for (u64 i = 0; i < current->children_count; i++) {
@@ -2058,12 +2065,11 @@ static void atlr_profile_end() {
 }
 
 static void atlr_profile_print_block(AtlrProfileBlock* block, u64 depth, u64 total_cpu_time) {
-    char* depth_hint = (char*) malloc(sizeof(char) * 2 * depth);
-    memset(depth_hint, 0, sizeof(char) * 2 * depth);
-    for (u64 i = 0; i < depth * 2; i++) {
+    char depth_hint[100];
+    for (u64 i = 0; i < depth * 2 && i < 100; i++) {
         depth_hint[i] = '-';
     }
-    depth_hint[(sizeof(char) * 2 * depth) - 1] = '\0';
+    depth_hint[99] = '\0';
     u64 current_time = block->time;
     u64 total_child_time = block->child_time;
     u64 total_child_min_pfault = block->child_min_pfault;

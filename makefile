@@ -3,8 +3,14 @@ CFLAGS=-Wpedantic -Wextra -Wall -std=c23
 
 all: build
 
+debug: 
+	@${CC} ${CFLAGS} -g -fPIC atlr.h -o atlr.debug.so
+	@echo "-- debug: build lib successfully"
 
-build: 
-	@${CC} ${CFLAGS} -fPIC atlr.h -o atlr.so
-	@echo "build lib successfully"
+release: 
+	@${CC} ${CFLAGS} -O2 -fPIC atlr.h -o atlr.release.so
+	@echo "-- release: build lib successfully"
+
+
+build:  debug release
 
