@@ -141,16 +141,16 @@ typedef signed int   ssize;
 // ===========================================================
 
 typedef struct {
-    void* data;
+    char* id;
     u64 capacity;
     u64 used;
+    void* data;
 } AtlrArena;
 
-static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity);
+static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity, char* id);
 static u8*       atlr_mem_allocate(AtlrArena* arena, u64 size);
-static AtlrArena atlr_mem_slice(AtlrArena* arena, u64 size);
-static void      atlr_mem_clear(AtlrArena* arena, char* id);
-static void      atlr_mem_free(AtlrArena* arena, char* id);
+static AtlrArena atlr_mem_slice(AtlrArena* arena, u64 size, char* id);
+static void      atlr_mem_clear(AtlrArena* arena);
 
 // ===========================================================
 // @header: init
@@ -563,7 +563,7 @@ static b32 _atlr_random_initialized = 0;
 
 static void atlr_init(AtlrArena* memory) {
     if (ATLR_MEMORY.capacity == 0) {
-        ATLR_MEMORY = atlr_mem_slice(memory, ATLR_MEMORY_CAPACITY);
+        ATLR_MEMORY = atlr_mem_slice(memory, ATLR_MEMORY_CAPACITY, "atlr_main_mem");
     }
 
     if (ATLR_LOG_FILE == NULL) {
@@ -571,7 +571,7 @@ static void atlr_init(AtlrArena* memory) {
     }
 
     if (ATLR_LOG_MEMORY.capacity == 0) {
-        ATLR_LOG_MEMORY = atlr_mem_slice(&ATLR_MEMORY, sizeof(char) * 50);
+        ATLR_LOG_MEMORY = atlr_mem_slice(&ATLR_MEMORY, sizeof(char) * 50, "atlr_log_mem");
     }
 }
 
@@ -847,11 +847,12 @@ static f64 atlr_random_f64(f64 upper_limit, f64 lower_limit) {
 // @implementation: memory arena functions
 // ===========================================================
 
-static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity) {
+static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity, char* id) {
     return (AtlrArena) {
-        .data = memory,
+        .id = id,
         .capacity = capacity,
         .used = 0,
+        .data = memory,
     };
 }
 
@@ -866,17 +867,18 @@ static u8* atlr_mem_allocate(AtlrArena* arena, u64 size) {
     return current;
 }
 
-static AtlrArena atlr_mem_slice(AtlrArena* arena, u64 size) {
+static AtlrArena atlr_mem_slice(AtlrArena* arena, u64 size, char* id) {
     void* arena_start = atlr_mem_allocate(arena, size);
     return (AtlrArena) {
-        .data = arena_start,
+        .id = id,
         .capacity = size,
         .used = 0,
+        .data = arena_start,
     };
 }
 
-static void atlr_mem_clear(AtlrArena* arena, char* id) {
-    atlr_log_debug("freeing mem arena (%s): used: %0.5f %%", id, ((f64) arena->used / arena->capacity) * 100.0);
+static void atlr_mem_clear(AtlrArena* arena) {
+    atlr_log_debug("freeing mem arena (%s): used: %0.5f %%", arena->id, ((f64) arena->used / arena->capacity) * 100.0);
     arena->used = 0;
 }
 
@@ -1062,8 +1064,8 @@ static void atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir, Atl
         atlr_log_error("Could not create dest directory");
         return;
     }
-    AtlrArena string_mem = atlr_mem_slice(memory, ATLR_KILOBYTE);
-    AtlrArena file_mem = atlr_mem_slice(memory, memory->capacity - string_mem.capacity);
+    AtlrArena string_mem = atlr_mem_slice(memory, ATLR_KILOBYTE, "copy_dir_str_arena");
+    AtlrArena file_mem = atlr_mem_slice(memory, memory->capacity - string_mem.capacity, "copy_dir_file_arena");
     AtlrString dest_file_name = atlr_str_create_empty_with_capacity(60, &string_mem);
     for (u32 i = 0; i < directory->count; i++) {
         AtlrFile file = directory->files[i];
@@ -1071,7 +1073,7 @@ static void atlr_fs_copy_dir(AtlrDirectory *directory, AtlrString* dest_dir, Atl
         atlr_str_concat_atlr_string(&dest_file_name, dest_dir, &string_mem);
         atlr_str_concat_atlr_string(&dest_file_name, &file.filename, &string_mem);
 
-        atlr_mem_clear(&file_mem, (char*) __func__);
+        atlr_mem_clear(&file_mem);
         AtlrResult load_res = atlr_fs_load_file(&file, &file_mem);
         if (!load_res.is_success) {
             atlr_log_error("%s", atlr_get_error_message(load_res));
@@ -1176,7 +1178,7 @@ static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *memory) {
 static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToken *tokens, AtlrArena* memory) {
     atlr_profile_start_with_id((char*) __func__, contents_size);
     u64 current_token = 0;
-    AtlrArena scratchpad = atlr_mem_slice(memory, sizeof(char) * 100);
+    AtlrArena scratchpad = atlr_mem_slice(memory, sizeof(char) * 100, "json_tokenize_scratchpad");
     for (s64 i = 0; i < contents_size; i++) {
         switch (contents[i]) {
             case '{': {
@@ -1268,7 +1270,7 @@ static u64 _atlr_tokenize_string(char *contents, s64 contents_size, AtlrJsonToke
                     *value_float = atlr_string_to_f64(value, size_string);
                     atlr_profile_end();
                     tokens[current_token].data = value_float;
-                    atlr_mem_clear(&scratchpad, (char*)__func__);
+                    atlr_mem_clear(&scratchpad);
                     current_token++;
                     atlr_profile_end();
                 } else {
