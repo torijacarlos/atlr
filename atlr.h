@@ -32,7 +32,41 @@
 #include <unistd.h>
 #include <x86intrin.h>
 
-// TODO: make stubs for stb functions
+// TODO: make stubs for stb functions, or, don't even call them.
+
+#ifndef STB_TRUETYPE_IMPLEMENTATION
+typedef struct {
+   unsigned char *data;
+   int cursor;
+   int size;
+} stbtt__buf;
+
+typedef struct stbtt_fontinfo {
+   void           * userdata;
+   unsigned char  * data;
+   int              fontstart;
+   int numGlyphs;
+   int loca,head,glyf,hhea,hmtx,kern,gpos,svg;
+   int index_map;
+   int indexToLocFormat;
+   stbtt__buf cff;
+   stbtt__buf charstrings;
+   stbtt__buf gsubrs;
+   stbtt__buf subrs;
+   stbtt__buf fontdicts;
+   stbtt__buf fdselect;
+} stbtt_fontinfo;
+
+static int stbtt_GetFontOffsetForIndex(const unsigned char *, int);
+static int stbtt_InitFont(stbtt_fontinfo *info, const unsigned char *, int);
+static float stbtt_ScaleForPixelHeight(const stbtt_fontinfo *, float);
+static unsigned char *stbtt_GetCodepointBitmap(const stbtt_fontinfo *, float, float, int, int *, int *, int *, int *);
+#endif
+
+#ifndef STB_IMAGE_IMPLEMENTATION
+typedef unsigned char stbi_uc;
+static stbi_uc *stbi_load(char const*, int*, int*, int*, int);
+#endif
 
 // ===========================================================
 // @definition: symbols
@@ -395,7 +429,7 @@ static AtlrImage atlr_image_load(char*);
 static u32       atlr_image_get_color(AtlrImage, s32, s32);
 
 // ===========================================================
-// @header: atlr_font
+// @header: font
 // ===========================================================
 
 typedef struct {
@@ -492,14 +526,18 @@ static AtlrProfile _atlr_profiling = {
 static u64 _atlr_profile_current = 0;
 static u64 _atlr_cpu_frequency = 0;
 
-static u64  atlr_get_cpu_time();
-static u64  atlr_get_cpu_frequency();
-static void atlr_profile_init_block(AtlrProfileBlock*, char*, u64);
-static void atlr_profile_close_block(AtlrProfileBlock *block);
-static void atlr_profile_start_with_id(char*, u64);
-static void atlr_profile_end();
-static void atlr_profile_print_block(AtlrProfileBlock*, u64, u64);
-static void atlr_profile_print_block_at_pos(u64, u64, u64);
+static u64                   atlr_get_cpu_time();
+static u64                   atlr_get_cpu_frequency();
+static void                  atlr_profile_init_block(AtlrProfileBlock*, char*, u64);
+static void                  atlr_profile_close_block(AtlrProfileBlock *block);
+static void                  atlr_profile_start_with_id(char*, u64);
+static void                  atlr_profile_end();
+static void                  atlr_profile_print();
+static void                  atlr_profile_filter(char* name);
+static void                  atlr_profile_print_block(AtlrProfileBlock*, u64, u64);
+static void                  atlr_profile_print_block_at_pos(u64, u64, u64);
+static b32                   atlr_profile_repetition_lap(AtlrProfileRepetition* repetition);
+static AtlrProfileRepetition atlr_profile_repetition();
 
 // ===========================================================
 // ===========================================================
@@ -952,7 +990,6 @@ static AtlrDirectory atlr_fs_get_directory(char *pathname) {
     atlr_dir.count = 0;
 
     DIR *directory = opendir(atlr_dir.path.data);
-    u32 file_pathname_len = strlen(atlr_dir.path.data);
     while (directory) {
         DirEnt *entry = readdir(directory);
         // NOTE(torija): `entry->d_type == 4` if its a directory
@@ -1018,7 +1055,6 @@ static void atlr_remove_dir_files(AtlrString *dir_name, b32 remove_dir) {
 static AtlrCsv atlr_csv_load(char *csv_contents, AtlrArena *mem) {
     u32 current_column = 0;
     u32 current_row = 0;
-    u32 total_columns = 0;
     AtlrString current = atlr_str_create_empty();
 
     u64 header_fields = 0;
@@ -1507,7 +1543,7 @@ static u32 atlr_image_get_color(AtlrImage img, s32 x, s32 y) {
 }
 
 // ===========================================================
-// @implementation: atlr_font
+// @implementation: font
 // ===========================================================
 
 static AtlrFont atlr_font_load(char* font_path, f32 font_scale, AtlrArena* arena) {
@@ -1855,17 +1891,17 @@ static Vec2 atlr_algebra_vec2_substract(Vec2 a, Vec2 b) {
 
 static Vec2 atlr_algebra_cross_m2x2_v2(Matrix2x2 m, Vec2 v) {
     return (Vec2) {
-        (m.values[0] * v.values[0]) + (m.values[1] * v.values[1]),
-        (m.values[2] * v.values[0]) + (m.values[3] * v.values[1]),
+        .x = (m.values[0] * v.values[0]) + (m.values[1] * v.values[1]),
+        .y = (m.values[2] * v.values[0]) + (m.values[3] * v.values[1]),
     };
 }
 
 static Matrix2x2 atlr_algebra_get_roll_m2x2(f64 degree) {
     f64 radian = degree * ATLR_RADIAN;
-    return (Matrix2x2) {
+    return (Matrix2x2) {{
         cos(radian), -sin(radian),
         sin(radian),  cos(radian),
-    };
+    }};
 }
 
 // ===========================================================
@@ -1895,7 +1931,7 @@ static u64 atlr_get_cpu_frequency() {
 
 // NOTE: block
 static void atlr_profile_init_block(AtlrProfileBlock*, char*, u64) {}
-static void atlr_profile_close_block(AtlrProfileBlock *block) {}
+static void atlr_profile_close_block(AtlrProfileBlock *) {}
 
 // NOTE: block tree
 static void atlr_profile_start_with_id(char*, u64) {
@@ -1910,6 +1946,12 @@ static void atlr_profile_end() {}
 // NOTE: reporting
 static void atlr_profile_print_block(AtlrProfileBlock*, u64, u64) {}
 static void atlr_profile_print_block_at_pos(u64, u64, u64) {}
+static void atlr_profile_print() { }
+static void atlr_profile_filter(char*) {}
+
+// NOTE: repetition tests
+static AtlrProfileRepetition atlr_profile_repetition() { return (AtlrProfileRepetition) {}; }
+static b32 atlr_profile_repetition_lap(AtlrProfileRepetition*) { return 0; }
 
 #else
 
@@ -2071,9 +2113,6 @@ static void atlr_profile_print_block_at_pos(u64 block, u64 depth, u64 total_cpu_
     }
 }
 
-#endif
-
-
 static void atlr_profile_print() {
     _atlr_profiling.blocks[0].time = atlr_get_cpu_time() - _atlr_profiling.blocks[0].start_cpu_time;
     _atlr_cpu_frequency = atlr_get_cpu_frequency();
@@ -2087,8 +2126,6 @@ static void atlr_profile_print() {
 
     atlr_profile_print_block_at_pos(0, 1, total_cpu_time);
 }
-
-
 
 static AtlrProfileRepetition atlr_profile_repetition() {
     AtlrProfileRepetition rep = {
@@ -2123,9 +2160,8 @@ static b32 atlr_profile_repetition_lap(AtlrProfileRepetition* repetition) {
     return 1;
 }
 
-
 #endif
 
 #endif
 
-////////// END OF FILE
+#endif
