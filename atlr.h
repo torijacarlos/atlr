@@ -2170,8 +2170,8 @@ static b32 atlr_profile_repetition_lap(AtlrProfileRepetition* repetition) {
     return 1;
 }
 
-#endif
+#endif // ATLR_PROFILE
 
-#endif
+#endif // ATLR_HEADER_ONLY
 
-#endif
+#endif // ATLR_H
