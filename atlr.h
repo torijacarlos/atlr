@@ -451,13 +451,12 @@ typedef struct {
 
 typedef struct {
    stbtt_fontinfo font;
-   AtlrFile* font_file;
    f32 scale;
    f32 pixel_height;
    AtlrFontAtlas atlas;
 } AtlrFont;
 
-static AtlrFont      atlr_font_load(char* font_path, u64 pathlen, f32 font_scale, AtlrArena* arena);
+static AtlrFont      atlr_font_load(void* font_data, f32 font_scale, AtlrArena* arena);
 static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint);
 
 // ===========================================================
@@ -1563,15 +1562,12 @@ static u32 atlr_image_get_color(AtlrImage img, s32 x, s32 y) {
 // ===========================================================
 
 // TODO: don't load file here
-static AtlrFont atlr_font_load(char* font_path, u64 pathlen, f32 font_scale, AtlrArena* memory) {
-    AtlrFile* font_file = atlr_fs_get_file(font_path, pathlen, memory);
-    atlr_fs_load_file(font_file, memory);
+static AtlrFont atlr_font_load(void* font_data, f32 font_scale, AtlrArena* memory) {
     AtlrFont atlr_font = {
-        .font_file = font_file,
         .scale = font_scale,
     };
-    s32 offset = stbtt_GetFontOffsetForIndex((u8*)atlr_font.font_file->data, 0);
-    stbtt_InitFont(&atlr_font.font, (u8*)atlr_font.font_file->data, offset);
+    s32 offset = stbtt_GetFontOffsetForIndex((u8*) font_data, 0);
+    stbtt_InitFont(&atlr_font.font, (u8*) font_data, offset);
     atlr_font.pixel_height = stbtt_ScaleForPixelHeight(&atlr_font.font, font_scale);
     atlr_font.atlas = (AtlrFontAtlas) {
         .glyphs = (AtlrFontGlyph*) atlr_mem_allocate(memory, sizeof(AtlrFontGlyph) * atlr_font.font.numGlyphs),
