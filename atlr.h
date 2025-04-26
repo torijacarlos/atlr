@@ -32,37 +32,6 @@
 #include <unistd.h>
 #include <x86intrin.h>
 
-// TODO: make stubs for stb functions, or, don't even call them.
-
-#ifndef STB_TRUETYPE_IMPLEMENTATION
-typedef struct {
-   unsigned char *data;
-   int cursor;
-   int size;
-} stbtt__buf;
-
-typedef struct stbtt_fontinfo {
-   void           * userdata;
-   unsigned char  * data;
-   int              fontstart;
-   int numGlyphs;
-   int loca,head,glyf,hhea,hmtx,kern,gpos,svg;
-   int index_map;
-   int indexToLocFormat;
-   stbtt__buf cff;
-   stbtt__buf charstrings;
-   stbtt__buf gsubrs;
-   stbtt__buf subrs;
-   stbtt__buf fontdicts;
-   stbtt__buf fdselect;
-} stbtt_fontinfo;
-
-static int stbtt_GetFontOffsetForIndex(const unsigned char *, int);
-static int stbtt_InitFont(stbtt_fontinfo *info, const unsigned char *, int);
-static float stbtt_ScaleForPixelHeight(const stbtt_fontinfo *, float);
-static unsigned char *stbtt_GetCodepointBitmap(const stbtt_fontinfo *, float, float, int, int *, int *, int *, int *);
-#endif
-
 // ===========================================================
 // @definition: symbols
 // ===========================================================
@@ -450,13 +419,13 @@ typedef struct {
 } AtlrFontAtlas;
 
 typedef struct {
-   stbtt_fontinfo font;
    f32 scale;
    f32 pixel_height;
    AtlrFontAtlas atlas;
 } AtlrFont;
 
-static AtlrFont      atlr_font_load(void* font_data, f32 font_scale, AtlrArena* arena);
+static AtlrFont      atlr_font_create(f32 font_scale, f32 pixel_height, u32 glyph_count, AtlrArena* memory);
+static void          atlr_font_add_glyph(AtlrFont* font, char codepoint, u8* bitmap, s32 w, s32 h, s32 shift_x, s32 shift_y);
 static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint);
 
 // ===========================================================
@@ -1561,20 +1530,28 @@ static u32 atlr_image_get_color(AtlrImage img, s32 x, s32 y) {
 // @implementation: font
 // ===========================================================
 
-// TODO: don't load file here
-static AtlrFont atlr_font_load(void* font_data, f32 font_scale, AtlrArena* memory) {
-    AtlrFont atlr_font = {
+static AtlrFont atlr_font_create(f32 font_scale, f32 pixel_height, u32 glyph_count, AtlrArena* memory) {
+    return (AtlrFont) {
         .scale = font_scale,
+        .pixel_height = pixel_height, 
+        .atlas = (AtlrFontAtlas) {
+            .glyphs = (AtlrFontGlyph*) atlr_mem_allocate(memory, sizeof(AtlrFontGlyph) * glyph_count),
+            .capacity = glyph_count,
+            .last = 0,
+        },
     };
-    s32 offset = stbtt_GetFontOffsetForIndex((u8*) font_data, 0);
-    stbtt_InitFont(&atlr_font.font, (u8*) font_data, offset);
-    atlr_font.pixel_height = stbtt_ScaleForPixelHeight(&atlr_font.font, font_scale);
-    atlr_font.atlas = (AtlrFontAtlas) {
-        .glyphs = (AtlrFontGlyph*) atlr_mem_allocate(memory, sizeof(AtlrFontGlyph) * atlr_font.font.numGlyphs),
-        .capacity = atlr_font.font.numGlyphs,
-        .last = 0,
+}
+
+static void atlr_font_add_glyph(AtlrFont* font, char codepoint, u8* bitmap, s32 w, s32 h, s32 shift_x, s32 shift_y) {
+    font->atlas.glyphs[font->atlas.last] = (AtlrFontGlyph) {
+        .codepoint = codepoint,
+        .width = w,
+        .height = h,
+        .x_shift = shift_x,
+        .y_shift = shift_y,
+        .bitmap = bitmap,
     };
-    return atlr_font;
+    font->atlas.last++;
 }
 
 static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint) {
@@ -1583,21 +1560,7 @@ static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint) {
             return font->atlas.glyphs[i];
         }
     }
-    s32 w, h, x_off, y_off;
-    // TODO: should we keep this bitmap in our mem arena and free this one?
-    u8 *bitmap = stbtt_GetCodepointBitmap(&font->font, 0, font->pixel_height, codepoint, &w, &h, &x_off, &y_off);
-    s32 x_shift = x_off;
-    s32 y_shift = h + y_off;
-    font->atlas.glyphs[font->atlas.last] = (AtlrFontGlyph) {
-        .codepoint = codepoint,
-        .width = w,
-        .height = h,
-        .x_shift = x_shift,
-        .y_shift = y_shift,
-        .bitmap = bitmap,
-    };
-    font->atlas.last++;
-    return font->atlas.glyphs[font->atlas.last - 1];
+    return font->atlas.glyphs[0];
 }
 
 // ===========================================================
