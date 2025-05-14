@@ -429,19 +429,19 @@ static void          atlr_font_add_glyph(AtlrFont* font, char codepoint, u8* bit
 static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint);
 
 // ===========================================================
-// @header: atlr_rtzr
+// @header: rasterizer
 // ===========================================================
 
-static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory);
-static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color);
-static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color, AtlrArena* memory);
-static void atlr_rtzr_order_triangle(Triangle *triangle);
-static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory);
-static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory);
-static void atlr_rtzr_make_rect_triangles(Rectangle rect, Triangle* triangles);
-static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory);
-static void atlr_rtzr_draw_triangle_texture(u32* data, s32 w, s32 h, Triangle, AtlrImage, u32, u32, b32, Matrix2x2, AtlrArena*);
-static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory);
+static Line atlr_draw_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory);
+static void atlr_draw_order_triangle(Triangle *triangle);
+static void atlr_draw_make_rect_triangles(Rectangle rect, Triangle* triangles);
+static void atlr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color);
+static void atlr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color);
+static void atlr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color);
+static void atlr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory);
+static void atlr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory);
+static void atlr_draw_triangle_texture(u32* data, s32 w, s32 h, Triangle, AtlrImage, u32, u32, b32, Matrix2x2, AtlrArena*);
+static void atlr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory);
 
 // ===========================================================
 // @header: math
@@ -826,7 +826,7 @@ static AtlrArena atlr_mem_create_arena(void* memory, u64 capacity, char* id) {
 
 static u8* atlr_mem_allocate(AtlrArena* arena, u64 size) {
     if (arena->used + size > arena->capacity) {
-        atlr_log_error("insufficient capacity");
+        atlr_log_error("Arena: (%s) insufficient capacity: %0.5f %%", arena->id, ((f64) (arena->used + size) / arena->capacity) * 100.0);
         return NULL;
     }
     void* current = (u8*)arena->data + arena->used;
@@ -1564,10 +1564,10 @@ static AtlrFontGlyph atlr_font_get_glyph(AtlrFont* font, char codepoint) {
 }
 
 // ===========================================================
-// @implementation: atlr_rtzr
+// @implementation: atlr
 // ===========================================================
 
-static void atlr_rtzr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 color, Vec2 origin, AtlrFont* font) {
+static void atlr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 color, Vec2 origin, AtlrFont* font) {
     u32 x_pos = origin.x;
     u32 y_pos = origin.y - font->scale;
     u32 fixed_kern = font->scale / 10;
@@ -1581,7 +1581,7 @@ static void atlr_rtzr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 c
         for (s32 j = 0; j < glyph.height; ++j) {
             for (s32 i = 0; i < glyph.width; ++i) {
                 if (glyph.bitmap[j * glyph.width + i] > 0) {
-                    atlr_rtzr_draw_pixel(data, w, h, i + x_pos + glyph.x_shift, glyph.height - j + y_pos - glyph.y_shift, color);
+                    atlr_draw_pixel(data, w, h, i + x_pos + glyph.x_shift, glyph.height - j + y_pos - glyph.y_shift, color);
                 }
             }
         }
@@ -1589,7 +1589,7 @@ static void atlr_rtzr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 c
     }
 }
 
-static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory) {
+static Line atlr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory) {
     Line line = (Line) {};
     line.count = abs(ind_end - ind_start);
     line.points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * line.count);
@@ -1605,7 +1605,7 @@ static Line atlr_rtzr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 i
     return line;
 }
 
-static void atlr_rtzr_order_triangle(Triangle *triangle) {
+static void atlr_order_triangle(Triangle *triangle) {
     if (triangle->points[1].y < triangle->points[0].y) {
         Vec2 temp = triangle->points[1];
         triangle->points[1] = triangle->points[0];
@@ -1623,7 +1623,7 @@ static void atlr_rtzr_order_triangle(Triangle *triangle) {
     }
 }
 
-static void atlr_rtzr_make_rect_triangles(Rectangle rect, Triangle* triangles) {
+static void atlr_make_rect_triangles(Rectangle rect, Triangle* triangles) {
     triangles[0] = (Triangle) {
         (Vec2) {.x = (f64)rect.x,          .y = (f64) rect.y}, 
         (Vec2) {.x = (f64)rect.x + rect.w, .y = (f64) rect.y},
@@ -1636,7 +1636,7 @@ static void atlr_rtzr_make_rect_triangles(Rectangle rect, Triangle* triangles) {
     };
 }
 
-static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color) {
+static void atlr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 color) {
     s32 fb_x = (w / 2) + x;
     s32 fb_y = (h / 2) - y;
     if (fb_y < 0 || fb_y >= h) return;
@@ -1644,51 +1644,54 @@ static void atlr_rtzr_draw_pixel(u32* data, s32 w, s32 h, s32 x, s32 y, u32 colo
     data[fb_y * w + fb_x] = color;
 }
 
-static void atlr_rtzr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color, AtlrArena* memory) {
+static void atlr_draw_line(u32* data, s32 w, s32 h, Vec2 from, Vec2 to, u32 color) {
     if (atlr_algebra_vec2_equal(from, to)) {
-        atlr_rtzr_draw_pixel(data, w, h, from.x, from.y, color);
+        atlr_draw_pixel(data, w, h, from.x, from.y, color);
         return;
     }
 
-    Vec2 first_point = from;
-    Vec2 last_point = to;
-    Vec2 vector = atlr_algebra_vec2_substract(last_point, first_point);
+    // NOTE: Bresenham's algorithm.
+    // Taken from https://zingl.github.io/bresenham.html
+    //
+    // After using the profiler on this, comparing with the old version, this
+    // seems to be twice as fast with the -O2 flag, but a bit slower with no
+    // optimizations. Haven't look at the assembly, but this version also does
+    // not use any additional memory, so that's good enough.
 
-    Line line;
-
-    if (fabs(vector.x) > fabs(vector.y))  {
-        if (last_point.x < first_point.x) {
-            first_point = to;
-            last_point = from;
+    s32 dx  =  abs((s32)to.x - (s32)from.x);
+    s32 dy  = -abs((s32)to.y - (s32)from.y);
+    s32 sx  =  from.x < to.x ? 1 : -1;
+    s32 sy  =  from.y < to.y ? 1 : -1; 
+    s32 err = dx + dy;
+    s32 e2;
+    s32 x = from.x, y = from.y;
+    loop {
+        atlr_draw_pixel(data, w, h, x, y, color);
+        if (x == to.x && y == to.y) break;
+        e2 = 2 * err;
+        if (e2 >= dy) { 
+            err += dy; 
+            x += sx; 
         }
-        line = atlr_rtzr_interpolate(last_point.y, first_point.y, last_point.x, first_point.x, memory);
-        for (u32 i = 0; i < line.count; i++) {
-            atlr_rtzr_draw_pixel(data, w, h, line.points[i].values[0], line.points[i].values[1], color);
-        }
-    } else {
-        if (last_point.y < first_point.y) {
-            first_point = to;
-            last_point = from;
-        }
-        line = atlr_rtzr_interpolate(last_point.x, first_point.x, last_point.y, first_point.y, memory);
-        for (u32 i = 0; i < line.count; i++) {
-            atlr_rtzr_draw_pixel(data, w, h, line.points[i].values[1], line.points[i].values[0], color);
+        if (e2 <= dx) { 
+            err += dx; 
+            y += sy; 
         }
     }
 }
 
-static void atlr_rtzr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory) {
-    atlr_rtzr_draw_line(data, w, h, triangle.points[0], triangle.points[1], color, memory);
-    atlr_rtzr_draw_line(data, w, h, triangle.points[1], triangle.points[2], color, memory);
-    atlr_rtzr_draw_line(data, w, h, triangle.points[2], triangle.points[0], color, memory);
+static void atlr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color) {
+    atlr_draw_line(data, w, h, triangle.points[0], triangle.points[1], color);
+    atlr_draw_line(data, w, h, triangle.points[1], triangle.points[2], color);
+    atlr_draw_line(data, w, h, triangle.points[2], triangle.points[0], color);
 }
 
-static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory) {
-    atlr_rtzr_order_triangle(&triangle);
+static void atlr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory) {
+    atlr_order_triangle(&triangle);
 
-    Line line01 = atlr_rtzr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
-    Line line12 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
-    Line line02 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
+    Line line01 = atlr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
+    Line line12 = atlr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
+    Line line02 = atlr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
 
     Line line012 = (Line) {
         .points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * (line01.count + line12.count)),
@@ -1716,25 +1719,25 @@ static void atlr_rtzr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle tri
         Vec2 left = x_left.points[position];
         Vec2 right = x_right.points[position];
         for (s32 x = left.values[1]; x <= right.values[1]; x++) {
-            atlr_rtzr_draw_pixel(data, w, h, x, y, color);
+            atlr_draw_pixel(data, w, h, x, y, color);
         }
     }
 }
 
-static void atlr_rtzr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory) {
+static void atlr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory) {
     Triangle t[2];
-    atlr_rtzr_make_rect_triangles(rect, t);
+    atlr_make_rect_triangles(rect, t);
     t[0].points[0] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[0]);
     t[0].points[1] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[1]);
     t[0].points[2] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[2]);
     t[1].points[0] = atlr_algebra_cross_m2x2_v2(rotation, t[1].points[0]);
     t[1].points[1] = atlr_algebra_cross_m2x2_v2(rotation, t[1].points[1]);
     t[1].points[2] = atlr_algebra_cross_m2x2_v2(rotation, t[1].points[2]);
-    atlr_rtzr_draw_filled_triangle(data, w, h, t[0], color, memory);
-    atlr_rtzr_draw_filled_triangle(data, w, h, t[1], color, memory);
+    atlr_draw_filled_triangle(data, w, h, t[0], color, memory);
+    atlr_draw_filled_triangle(data, w, h, t[1], color, memory);
 }
 
-static void atlr_rtzr_draw_triangle_texture(
+static void atlr_draw_triangle_texture(
     u32* data, s32 w, s32 h,
     Triangle triangle, 
     AtlrImage image,
@@ -1744,11 +1747,11 @@ static void atlr_rtzr_draw_triangle_texture(
     Matrix2x2 rotation,
     AtlrArena* memory
 ) {
-    atlr_rtzr_order_triangle(&triangle);
+    atlr_order_triangle(&triangle);
 
-    Line line01 = atlr_rtzr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
-    Line line12 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
-    Line line02 = atlr_rtzr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
+    Line line01 = atlr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
+    Line line12 = atlr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
+    Line line02 = atlr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
 
     Line line012 = (Line) {
         .points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * (line01.count + line12.count)),
@@ -1797,17 +1800,17 @@ static void atlr_rtzr_draw_triangle_texture(
 
             u32 color = atlr_image_get_color(image, text_x, text_y);
             Vec2 point = atlr_algebra_cross_m2x2_v2(rotation, (Vec2) { .x = (f64)x, .y =(f64) y});
-            atlr_rtzr_draw_pixel(data, w, h, point.x, point.y, color);
+            atlr_draw_pixel(data, w, h, point.x, point.y, color);
         }
     }
 }
 
-static void atlr_rtzr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory) {
+static void atlr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory) {
     Triangle t[2];
-    atlr_rtzr_make_rect_triangles(dest, t);
+    atlr_make_rect_triangles(dest, t);
 
-    atlr_rtzr_draw_triangle_texture(data, w, h, t[0], image, dest.w, dest.h, 0, rotation, memory);
-    atlr_rtzr_draw_triangle_texture(data, w, h, t[1], image, dest.w, dest.h, 1, rotation, memory);
+    atlr_draw_triangle_texture(data, w, h, t[0], image, dest.w, dest.h, 0, rotation, memory);
+    atlr_draw_triangle_texture(data, w, h, t[1], image, dest.w, dest.h, 1, rotation, memory);
 }
 
 // ===========================================================
