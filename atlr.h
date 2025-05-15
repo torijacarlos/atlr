@@ -142,7 +142,10 @@ typedef struct {
 } Vec2;
 
 typedef struct {
-    f64 values[4];
+    union {
+        Vec2 rows[2];
+        f64 values[4];
+    };
 } Matrix2x2;
 
 typedef struct {
@@ -1860,10 +1863,54 @@ static b32 atlr_algebra_vec2_equal(Vec2 a, Vec2 b) {
     return 0;
 }
 
-static Vec2 atlr_algebra_vec2_substract(Vec2 a, Vec2 b) {
+static b32 atlr_algebra_m2x2_equal(Matrix2x2 ma, Matrix2x2 mb) {
+    if ((u64)(ma.values[0] - mb.values[0]) == 0 && 
+        (u64)(ma.values[1] - mb.values[1]) == 0 && 
+        (u64)(ma.values[2] - mb.values[2]) == 0 &&
+        (u64)(ma.values[3] - mb.values[3]) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static f64 atlr_algebra_dot(Vec2 va, Vec2 vb) {
+    return (va.x * vb.x) + (va.y * vb.y);
+}
+
+static Vec2 atlr_algebra_vec2_add(Vec2 a, Vec2 b) {
+    return (Vec2) {
+        .x = a.x + b.x,
+        .y = a.y + b.y,
+    };
+}
+
+static Vec2 atlr_algebra_vec2_sub(Vec2 a, Vec2 b) {
     return (Vec2) {
         .x = a.x - b.x,
         .y = a.y - b.y,
+    };
+}
+
+static f64 atlr_algebra_m2x2_determinant(Matrix2x2 m) {
+    return (m.values[0] * m.values[3]) - (m.values[1] * m.values[2]);
+}
+
+static Matrix2x2 atlr_algebra_m2x2_mult(Matrix2x2 ma, Matrix2x2 mb) {
+    return (Matrix2x2) {
+        ma.values[0] * mb.values[0] + ma.values[1] * mb.values[2],
+        ma.values[0] * mb.values[1] + ma.values[1] * mb.values[3],
+        ma.values[2] * mb.values[0] + ma.values[3] * mb.values[2],
+        ma.values[2] * mb.values[1] + ma.values[3] * mb.values[3],
+    };
+}
+
+static Matrix2x2 atlr_algebra_m2x2_inverse(Matrix2x2 m) {
+    f64 inv_det = 1.0f / atlr_algebra_m2x2_determinant(m);
+    return (Matrix2x2) {
+        inv_det * m.values[3],
+        -1 * inv_det * m.values[1],
+        -1 * inv_det * m.values[2],
+        inv_det * m.values[0],
     };
 }
 
