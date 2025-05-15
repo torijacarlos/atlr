@@ -1589,7 +1589,7 @@ static void atlr_draw_label(u32* data, s32 w, s32 h, AtlrString *str, u32 color,
     }
 }
 
-static Line atlr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory) {
+static Line atlr_draw_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_start, AtlrArena* memory) {
     Line line = (Line) {};
     line.count = abs(ind_end - ind_start);
     line.points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * line.count);
@@ -1605,7 +1605,7 @@ static Line atlr_interpolate(s32 dep_end, s32 dep_start, s32 ind_end, s32 ind_st
     return line;
 }
 
-static void atlr_order_triangle(Triangle *triangle) {
+static void atlr_draw_order_triangle(Triangle *triangle) {
     if (triangle->points[1].y < triangle->points[0].y) {
         Vec2 temp = triangle->points[1];
         triangle->points[1] = triangle->points[0];
@@ -1623,7 +1623,7 @@ static void atlr_order_triangle(Triangle *triangle) {
     }
 }
 
-static void atlr_make_rect_triangles(Rectangle rect, Triangle* triangles) {
+static void atlr_draw_make_rect_triangles(Rectangle rect, Triangle* triangles) {
     triangles[0] = (Triangle) {
         (Vec2) {.x = (f64)rect.x,          .y = (f64) rect.y}, 
         (Vec2) {.x = (f64)rect.x + rect.w, .y = (f64) rect.y},
@@ -1687,11 +1687,11 @@ static void atlr_draw_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 c
 }
 
 static void atlr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle, u32 color, AtlrArena* memory) {
-    atlr_order_triangle(&triangle);
+    atlr_draw_order_triangle(&triangle);
 
-    Line line01 = atlr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
-    Line line12 = atlr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
-    Line line02 = atlr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
+    Line line01 = atlr_draw_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
+    Line line12 = atlr_draw_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
+    Line line02 = atlr_draw_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
 
     Line line012 = (Line) {
         .points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * (line01.count + line12.count)),
@@ -1726,7 +1726,7 @@ static void atlr_draw_filled_triangle(u32* data, s32 w, s32 h, Triangle triangle
 
 static void atlr_draw_filled_rectangle(u32* data, s32 w, s32 h, Rectangle rect, u32 color, Matrix2x2 rotation, AtlrArena* memory) {
     Triangle t[2];
-    atlr_make_rect_triangles(rect, t);
+    atlr_draw_make_rect_triangles(rect, t);
     t[0].points[0] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[0]);
     t[0].points[1] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[1]);
     t[0].points[2] = atlr_algebra_cross_m2x2_v2(rotation, t[0].points[2]);
@@ -1747,11 +1747,11 @@ static void atlr_draw_triangle_texture(
     Matrix2x2 rotation,
     AtlrArena* memory
 ) {
-    atlr_order_triangle(&triangle);
+    atlr_draw_order_triangle(&triangle);
 
-    Line line01 = atlr_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
-    Line line12 = atlr_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
-    Line line02 = atlr_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
+    Line line01 = atlr_draw_interpolate(triangle.points[1].x, triangle.points[0].x, triangle.points[1].y, triangle.points[0].y, memory);
+    Line line12 = atlr_draw_interpolate(triangle.points[2].x, triangle.points[1].x, triangle.points[2].y, triangle.points[1].y, memory);
+    Line line02 = atlr_draw_interpolate(triangle.points[2].x, triangle.points[0].x, triangle.points[2].y, triangle.points[0].y, memory);
 
     Line line012 = (Line) {
         .points = (Vec2*) atlr_mem_allocate(memory, sizeof(Vec2) * (line01.count + line12.count)),
@@ -1807,7 +1807,7 @@ static void atlr_draw_triangle_texture(
 
 static void atlr_draw_image(u32* data, s32 w, s32 h, AtlrImage image, Rectangle dest, Matrix2x2 rotation, AtlrArena* memory) {
     Triangle t[2];
-    atlr_make_rect_triangles(dest, t);
+    atlr_draw_make_rect_triangles(dest, t);
 
     atlr_draw_triangle_texture(data, w, h, t[0], image, dest.w, dest.h, 0, rotation, memory);
     atlr_draw_triangle_texture(data, w, h, t[1], image, dest.w, dest.h, 1, rotation, memory);
